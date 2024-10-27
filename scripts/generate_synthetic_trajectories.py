@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 import json
 import argparse
+import tomli
 
 from simulator.simulator_base import DEFAULT_NUM_DRONES
 from simulator.simulator_train import TrainSimulator
@@ -14,17 +15,24 @@ from simulator.simulator_utils import setup_folders
 from path_templates.trajectory_templates import get_init_conditions_func
 
 
-def generate_one_training_trajectory(output_folder, obj_color, record_hz, task_tag: str):
+def generate_one_training_trajectory(config, object_tags):
+    """
+    Requires config to have the following keys:
+    - base_dir
+    - samples
+    - record_hz
+    - task_tag
+    """
     sim_name = "save-flight-" + datetime.now().strftime("%m.%d.%Y_%H.%M.%S.%f") # include milliseconds in save name for parallel runs
-    sim_dir = os.path.join(output_folder, sim_name)
+    sim_dir = os.path.join(config['base_dir'], sim_name)
     setup_folders(sim_dir, DEFAULT_NUM_DRONES)
 
-    generate_init_conditions_func = get_init_conditions_func(task_tag)
-    init_conditions = generate_init_conditions_func(obj_color)
+    generate_init_conditions_func = get_init_conditions_func(config['task_tag'])
+    init_conditions = generate_init_conditions_func(object_tags)
     with open(os.path.join(sim_dir, 'init_conditions.json'), 'w') as f:
         json.dump(init_conditions, f)
 
-    sim = TrainSimulator(sim_dir, init_conditions, record_hz, task_tag)
+    sim = TrainSimulator(sim_dir, init_conditions, config['record_hz'], config['task_tag'])
     
     sim.precompute_trajectory()
     sim.run_simulation_to_completion()
@@ -34,21 +42,13 @@ def generate_one_training_trajectory(output_folder, obj_color, record_hz, task_t
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Provide base directory.')
-    parser.add_argument('--base_dir', type=str, default="./generated_paths/train_fly_and_turn", help='Base directory for the script')
-    parser.add_argument("--samples", type=int, default=10, help="Number of samples")
-    parser.add_argument("--record_hz", type=str, default=3, help="Recording frequency")
-    parser.add_argument("--task_tag", type=str, choices=["2choice", "fly_and_turn"], default="fly_and_turn", help="Task tag")
+    parser = argparse.ArgumentParser(description='Generate synthetic trajectories')
+    parser.add_argument('--config', type=str, default='configs/generate.toml', help='Path to config file')
     args = parser.parse_args()
-    
-    base_dir = args.base_dir
-    samples = args.samples
-    record_hz = args.record_hz # ints or "1-10"
-    task_tag = args.task_tag
-    
-    OBJECTS = ["R", "B"]
-    NUM_INITIALIZATIONS = samples // len(OBJECTS)
-    total_list = OBJECTS * NUM_INITIALIZATIONS
+    with open(args.config, "rb") as f:
+        config = tomli.load(f)
+
+    total_list = config['object_tags'] * (config['samples'] // len(config['object_tags']))
     random.shuffle(total_list)
 
-    joblib.Parallel(n_jobs=16)(joblib.delayed(generate_one_training_trajectory)(base_dir, d, record_hz, task_tag) for d in tqdm(total_list))
+    joblib.Parallel(n_jobs=config['n_jobs'])(joblib.delayed(generate_one_training_trajectory)(config, object_tags) for object_tags in tqdm(total_list))
