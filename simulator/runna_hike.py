@@ -226,7 +226,7 @@ def run_pybullet_only_hike(
 
             # inputs = [*imgs, *hiddens]
             inputs = [*imgs, np.array(1.0 / record_hz * 5).reshape(-1, 1), *hiddens]
-            out = single_step_model.predict(inputs)
+            out = single_step_model.predict(inputs)  ## output of model and outputs an action
             if normalize_path is not None:
                 out[0][0] = out[0][0] * np_std + np_mean
             vel_cmd = out[0][0]  # shape: 1 x 8
@@ -294,6 +294,7 @@ def run_pybullet_only_hike(
 
         if i % CTRL_EVERY_N_STEPS == 0:
             time_data.append(CTRL_EVERY_N_STEPS * env.TIMESTEP * i)
+            ## Command loop
             for d in range(num_drones):
                 action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP,
                                                               cur_pos=states[d][0:3],

@@ -53,7 +53,15 @@ class BaseSimulator():
         self.has_precomputed_trajectory = False
         self.alive_obj_previously_in_view = False
 
-        self.rel_drone_locs = [(0, 0)]
+        # initialize random drone start location
+        y_offset = 0.1
+        x_offset = random.uniform(0, 1)
+        self.rel_drone_locs = [(x_offset, y_offset)]
+        # add drone location to the list of absolute locations and create cube starting object
+        self.objects_color.append("cube")
+        self.objects_relative.append((x_offset, y_offset))
+        self.objects_absolute.append(convert_to_global((x_offset, y_offset), self.theta_environment))
+
         self._init_trajectory_params()
         self.window_outcomes = []
 
@@ -106,6 +114,7 @@ class BaseSimulator():
             self.start_dropping = False
 
     def setup_simulation(self, drone=DEFAULT_DRONES, custom_obj_location=None):
+        print("setting up simulation")
         if custom_obj_location is None:
             custom_obj_location = {
                 "colors": self.objects_color,

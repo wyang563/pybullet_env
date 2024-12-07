@@ -183,8 +183,8 @@ class BaseAviary(gym.Env):
                 self.FRAME_PER_SEC = 24
                 self.CAPTURE_FREQ = int(self.SIM_FREQ/self.FRAME_PER_SEC)
                 self.CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=3,
-                                                                    yaw=-30,
-                                                                    pitch=-30,
+                                                                    yaw=0,
+                                                                    pitch=-90,
                                                                     roll=0,
                                                                     cameraTargetPosition=[0, 0, 0],
                                                                     upAxisIndex=2,

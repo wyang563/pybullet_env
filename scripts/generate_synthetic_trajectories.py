@@ -27,7 +27,7 @@ def generate_one_training_trajectory(config, object_tags):
     sim_dir = os.path.join(config['base_dir'], sim_name)
     setup_folders(sim_dir, DEFAULT_NUM_DRONES)
 
-    generate_init_conditions_func = get_init_conditions_func(config['task_tag'])
+    generate_init_conditions_func = get_init_condi tions_func(config['task_tag'])
     init_conditions = generate_init_conditions_func(object_tags)
     with open(os.path.join(sim_dir, 'init_conditions.json'), 'w') as f:
         json.dump(init_conditions, f)

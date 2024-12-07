@@ -87,9 +87,106 @@ def generate_init_conditions_2choice(object_color) -> InitConditionsSchema:
 
     return init_conditions
 
+def generate_init_conditions_4objects(object_color):
+    """
+    Specific implementation with weighted probabilities
+
+    Task: Four objects, fly around one and go to another one
+
+    """
+    max_yaw_offset = 0.1 * np.pi
+    if random.random() < 0.75:
+        start_heights = [0.1 + random.uniform(0, 1)]
+        theta_offset = random.choice([max_yaw_offset, -max_yaw_offset])
+    else:
+        start_heights = [0.1 + random.choice([0, 1])]
+        theta_offset = random.uniform(max_yaw_offset, -max_yaw_offset)
+
+    target_heights = [0.1 + 0.5]
+    theta_environment = random.random() * 2 * np.pi
+    
+    start_dist = random.uniform(1, 2)
+    orthogonal_dist = 1
+
+    ## gen random start and target objects
+    objects_relative = [(start_dist, -orthogonal_dist), (start_dist, orthogonal_dist), (start_dist, 2 * orthogonal_dist), (-start_dist, -2 * orthogonal_dist)]
+    
+    ## Todo change
+    colors = ["B", "R", "G", "Y"]
+    object_color_ind = colors.index(object_color)
+    colors.pop(object_color_ind)
+    objects_color = [object_color] + colors
+    objects_color_target = [object_color, objects_color[1]] 
+    objects_relative_target = objects_relative[:2]
+    
+    init_conditions_schema = InitConditionsSchema()
+    init_conditions = {
+        "task_name": "four_objects",
+        "start_heights": start_heights,
+        "target_heights": target_heights,
+        "start_dist": objects_relative[0][0],
+        "theta_offset": theta_offset,
+        "theta_environment": theta_environment,
+        "objects_relative": objects_relative,
+        "objects_color": objects_color,
+        "objects_relative_target": objects_relative_target,
+        "objects_color_target": objects_color_target
+    }
+    init_conditions = init_conditions_schema.load(init_conditions)
+
+    return init_conditions
+
+def generate_whale_init_conditions(object_color):
+    """
+    Specific implementation with weighted probabilities
+
+    Task: Single Object -- Fly to Correct Choice
+
+    """
+    max_yaw_offset = 0.1 * np.pi
+    if random.random() < 0.75:
+        start_heights = [0.1 + random.uniform(0, 1)]
+        theta_offset = random.choice([max_yaw_offset, -max_yaw_offset])
+    else:
+        start_heights = [0.1 + random.choice([0, 1])]
+        theta_offset = random.uniform(max_yaw_offset, -max_yaw_offset)
+
+    target_heights = [0.1 + 0.5]
+    theta_environment = random.random() * 2 * np.pi
+    
+    start_dist = random.uniform(1, 2)
+    orthogonal_dist = 0.4
+
+    # initialize 3 target objects representing whales
+    objects_relative = [(start_dist, -orthogonal_dist), (start_dist, orthogonal_dist)]
+
+    objects_color = [object_color, "B" if object_color == "R" else "R"]
+    objects_color_target = [object_color]
+    objects_relative_target = objects_relative[0:1]
+    
+    init_conditions_schema = InitConditionsSchema()
+    init_conditions = {
+        "task_name": "whale",
+        "start_heights": start_heights,
+        "target_heights": target_heights,
+        "start_dist": objects_relative[0][0],
+        "theta_offset": theta_offset,
+        "theta_environment": theta_environment,
+        "objects_relative": objects_relative,
+        "objects_color": objects_color,
+        "objects_relative_target": objects_relative_target,
+        "objects_color_target": objects_color_target,
+    }
+    init_conditions = init_conditions_schema.load(init_conditions)
+
+    return init_conditions
+
+
 function_map = {
     "fly_and_turn": generate_init_conditions_fly_and_turn,
-    "2choice": generate_init_conditions_2choice
+    "2choice": generate_init_conditions_2choice,
+    "four_objects": generate_init_conditions_4objects,
+    "whale": generate_whale_init_conditions
 }
 
 def get_init_conditions_func(task_name):

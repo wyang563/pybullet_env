@@ -24,7 +24,7 @@ CONTROL_STEP_NORMALIZATION = 3
 class TrainSimulator(BaseSimulator):
     def __init__(self, sim_dir, init_conditions, record_hz, task_tag):
         super().__init__(sim_dir, init_conditions, record_hz)
-        self.turn_mode = True if task_tag == "fly_and_turn" else False
+        self.turn_mode = True if task_tag in ["fly_and_turn", "whale"] else False
         self.num_frames = random.randint(TARGET_NUM_TIMESTEPS_TO_CRITICAL[0], TARGET_NUM_TIMESTEPS_TO_CRITICAL[1])
 
         self.dist_0_x = self.start_dist
@@ -94,8 +94,8 @@ class TrainSimulator(BaseSimulator):
             self.TARGET_POS, self.TARGET_ATT, self.FINAL_THETA, self.reached_critical
         """
         speeds = []
-        print(f"self.objects_absolute_target: {self.objects_absolute_target}")
-        for i, (target_pos, target_att, init_theta, final_theta, final_target) in enumerate(zip(self.TARGET_POS, self.TARGET_ATT, self.INIT_THETA, self.FINAL_THETA, self.objects_absolute_target)):
+        # print(f"self.objects_absolute_target: {self.objects_absolute_target}")
+        for _, (target_pos, target_att, init_theta, final_theta, final_target) in enumerate(zip(self.TARGET_POS, self.TARGET_ATT, self.INIT_THETA, self.FINAL_THETA, self.objects_absolute_target)):
             last_pos = target_pos[-1]    # X, Y, Z
             last_yaw = target_att[-1][2] # R, P, Y
             last_height = target_pos[-1][2]

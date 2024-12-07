@@ -1,7 +1,7 @@
 # Configuration for generating synthetic trajectories
 
 # Base output directory for generated trajectories
-base_dir = "./generated_paths/train_fly_and_turn"
+base_dir = "./generated_paths/test_flight"
 
 # Number of samples to generate
 # Will be split evenly between red and blue objects
@@ -12,8 +12,7 @@ samples = 10
 record_hz = 3
 
 # Task type
-# Options: "2choice" or "fly_and_turn"
-task_tag = "fly_and_turn"
+task_tag = "whale"
 
 # Parallel processing settings
 n_jobs = 16

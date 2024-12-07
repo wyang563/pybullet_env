@@ -8,11 +8,18 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics
 
 # If you don't have these urdfs in the pybullet_data package, 
 # run gym-pybullet-drones/gym_pybullet_drones/assets/copy_assets_to_pybullet_data_folder.py
+
+FILE_PREFIX = "/home/gridsan/wyang/.conda/envs/flex/lib/python3.9/site-packages/pybullet_data/"
+
+
 filename_map = {
-    'R': f"{pybullet_data.getDataPath()}/sphere2red.urdf",
-    'B': f"{pybullet_data.getDataPath()}/sphere2blue.urdf",
-    'G': f"{pybullet_data.getDataPath()}/sphere2green.urdf",
+    'R': f"{FILE_PREFIX}/sphere2red.urdf",
+    'B': f"{FILE_PREFIX}/sphere2blue.urdf",
+    'G': f"{FILE_PREFIX}/sphere2green.urdf",
+    'Y': f"{FILE_PREFIX}/sphere2yellow.urdf",
+    'cube' : f"{FILE_PREFIX}/cube.urdf",
 }
+
 
 class CtrlAviary(BaseAviary):
     """Multi-drone environment class for control applications."""
@@ -88,7 +95,7 @@ class CtrlAviary(BaseAviary):
         """
         assert color in filename_map.keys(), "Color not supported"
 
-        p.loadURDF("samurai.urdf",
+        p.loadURDF(FILE_PREFIX + "samurai.urdf",
             physicsClientId=self.CLIENT
         )     
         return p.loadURDF(filename_map[color],
@@ -123,7 +130,7 @@ class CtrlAviary(BaseAviary):
                         globalScaling=0.2
                         )
             
-        p.loadURDF("samurai.urdf",
+        p.loadURDF(FILE_PREFIX + "samurai.urdf",
             physicsClientId=self.CLIENT
         )
 
