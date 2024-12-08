@@ -10,68 +10,7 @@ import subprocess
 from tqdm import tqdm
 import tomli
 
-from simulator.runna_hike import run_pybullet_only_hike
-
-
-def get_tag_names(config):
-    saved_model_folders_list = config['saved_model_folders_list']
-
-    tag_names = ["_".join(folder.split('/')[-1].split('_')[1:]) for folder in saved_model_folders_list]
-    tag_names = [name + "_multi" if config['multi_step_objects'] else name for name in tag_names]
-    return tag_names
-
-def get_output_folders(tag_names, config):
-    return [f'{config["output_dir"]}/cl_real_{tag}' for tag in tag_names]
-
-def expand_to_distributed_setup(config):
-    """ 
-    Takes a list of models to evaluate, how many times to evaluate each model, other settings, and
-    returns the expanded lists for distributing the runs across multiple processes
-    """
-    concurrent_params_paths = []
-    concurrent_checkpoint_paths = []
-    output_folder_paths = []
-    expanded_record_hzs = []
-    expanded_variable_timesteps = []
-
-    for base_folder, output_folder, record_hz, variable_timestep in zip(
-            config['saved_model_folders_list'], 
-            get_output_folders(get_tag_names(config), config),
-            config['record_hzs'], 
-            config['variable_timesteps']):
-
-        val_folder = os.path.join(base_folder, 'val')
-        hdf5_files = glob.glob(os.path.join(val_folder, '*.hdf5'))
-        json_files = glob.glob(os.path.join(val_folder, '*.json'))
-
-        if hdf5_files and json_files and not os.path.exists(os.path.join(output_folder, 'val')):
-            for _ in range(config['runs_per_model']):
-                concurrent_checkpoint_paths.append(hdf5_files[0])
-                concurrent_params_paths.append(json_files[0]) 
-                output_folder_paths.append(os.path.join(output_folder, 'val'))
-                expanded_record_hzs.append(record_hz)
-                expanded_variable_timesteps.append(variable_timestep)
-
-        # Debug code for evaluating from checkpoints that are saved periodically every X epochs
-        # # Recurrent checkpoints evaluation
-        # recurrent_folder = os.path.join(base_folder, 'recurrent')
-        # for hdf5_file in glob.glob(os.path.join(recurrent_folder, '*.hdf5')):
-        #     epoch_num = int(re.findall(r'epoch-(\d+)', hdf5_file)[0])
-            
-        #     if os.path.exists(os.path.join(output_folder, f'recurrent{epoch_num}')):
-        #         continue
-
-        #     params_file = os.path.join(base_folder, 'recurrent', f'params{epoch_num}.json')
-        #     if os.path.exists(params_file):
-        #         for _ in range(RUNS_PER_MODEL):
-        #             concurrent_checkpoint_paths.append(hdf5_file)
-        #             concurrent_params_paths.append(params_file)
-        #             output_folder_paths.append(os.path.join(output_folder, f'recurrent{epoch_num}'))
-        #             expanded_record_hzs.append(record_hz)
-        #             expanded_variable_timesteps.append(variable_timestep)
-
-    return (concurrent_params_paths, concurrent_checkpoint_paths, 
-            output_folder_paths, expanded_record_hzs, expanded_variable_timesteps)
+from simulator.simulator_whale import run_pybullet_only_hike
 
 def generate_trajectories(config):
     if config['multi_step_objects']:
@@ -101,8 +40,8 @@ def generate_trajectories(config):
             locations_rel.append(locations)
     else:
         # TODO: Fix with config if need to use single-step eval
-        objects = [['R'], ['B']] * (len(output_folder_paths) // 2)
-        locations_rel = [[(random.uniform(*config['starting_distance_range']), 0)] for _ in range(len(output_folder_paths))]
+        objects = ['R', 'B']
+        locations_rel = [(random.uniform(*config['starting_distance_range']), 0)]
 
     return objects, locations_rel
 
@@ -162,30 +101,28 @@ if __name__ == "__main__":
     with open(args.config, "rb") as f:
         config = tomli.load(f)
 
-    # Get model paths and settings
-    paths = expand_to_distributed_setup(config)
-    concurrent_params_paths, concurrent_checkpoint_paths, output_folder_paths, expanded_record_hzs, expanded_variable_timesteps = paths
-
     # Generate trajectories
     objects, locations_rel = generate_trajectories(config)
 
-    # Run simulations in parallel
-    total_list = [(obj, loc) for output_folder in output_folder_paths
-                 for obj, loc in zip(objects, locations_rel)]
-
-    joblib.Parallel(n_jobs=config['n_jobs'])(
-        joblib.delayed(run_pybullet_only_hike)(
-            d, 
-            output_folder=output_folder_path,
-            params_path=params_path,
-            checkpoint_path=checkpoint_path,
-            duration_sec=config['duration_sec'], # TODO: Remove since it's not being used
-            record_hz=record_hz
-        )
-        for d, params_path, checkpoint_path, output_folder_path, record_hz, variable_timestep 
-        in tqdm(zip(total_list, concurrent_params_paths, concurrent_checkpoint_paths,
-                   output_folder_paths, expanded_record_hzs, expanded_variable_timesteps))
-    )
+    # Run simulations
+    run_pybullet_only_hike(list(zip(objects, locations_rel)), 
+                           output_folder="whale_results", 
+                           duration_sec=config['duration_sec'],
+                           record_hz=3
+                           )
+    
+    # joblib.Parallel(n_jobs=config['n_jobs'])(
+    #     joblib.delayed(run_pybullet_only_hike)(
+    #         d, 
+    #         output_folder=output_folder_path,
+    #         params_path=params_path,
+    #         duration_sec=config['duration_sec'], # TODO: Remove since it's not being used
+    #         record_hz=3
+    #     )
+    #     for d, params_path, checkpoint_path, output_folder_path, record_hz, variable_timestep 
+    #     in tqdm(zip(total_list, concurrent_params_paths, concurrent_checkpoint_paths,
+    #                output_folder_paths, expanded_record_hzs, expanded_variable_timesteps))
+    # )
 
     # Process and combine videos
-    process_videos(get_output_folders(get_tag_names(config), config))
+    # process_videos(get_output_folders(get_tag_names(config), config))

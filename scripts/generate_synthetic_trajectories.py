@@ -10,7 +10,7 @@ import argparse
 import tomli
 
 from simulator.simulator_base import DEFAULT_NUM_DRONES
-from simulator.simulator_train import TrainSimulator
+from simulator.simulator_whale import WhaleSimulator
 from simulator.simulator_utils import setup_folders
 from path_templates.trajectory_templates import get_init_conditions_func
 
@@ -27,12 +27,12 @@ def generate_one_training_trajectory(config, object_tags):
     sim_dir = os.path.join(config['base_dir'], sim_name)
     setup_folders(sim_dir, DEFAULT_NUM_DRONES)
 
-    generate_init_conditions_func = get_init_condi tions_func(config['task_tag'])
+    generate_init_conditions_func = get_init_conditions_func(config['task_tag'])
     init_conditions = generate_init_conditions_func(object_tags)
     with open(os.path.join(sim_dir, 'init_conditions.json'), 'w') as f:
         json.dump(init_conditions, f)
 
-    sim = TrainSimulator(sim_dir, init_conditions, config['record_hz'], config['task_tag'])
+    sim = WhaleSimulator(sim_dir, init_conditions, config['record_hz'], config['task_tag'])
     
     sim.precompute_trajectory()
     sim.run_simulation_to_completion()

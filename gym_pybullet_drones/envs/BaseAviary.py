@@ -184,7 +184,7 @@ class BaseAviary(gym.Env):
                 self.CAPTURE_FREQ = int(self.SIM_FREQ/self.FRAME_PER_SEC)
                 self.CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=3,
                                                                     yaw=0,
-                                                                    pitch=-90,
+                                                                    pitch=180,
                                                                     roll=0,
                                                                     cameraTargetPosition=[0, 0, 0],
                                                                     upAxisIndex=2,
@@ -567,14 +567,23 @@ class BaseAviary(gym.Env):
         rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
         #### Set target point, camera view and projection matrices #
         target = np.dot(rot_mat,np.array([1000, 0, 0])) + np.array(self.pos[nth_drone, :])
-        DRONE_CAM_VIEW = p.computeViewMatrix(cameraEyePosition=self.pos[nth_drone, :]+np.array([0, 0, self.L]),
-                                             cameraTargetPosition=target,
-                                             cameraUpVector=[0, 0, 1],
-                                             physicsClientId=self.CLIENT
-                                             )
+        HEIGHT_ABOVE = self.L if self.L > 0 else 0.1
+        DRONE_CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=0.5,
+                                                             yaw=0,
+                                                             pitch=-90,
+                                                             roll=0,
+                                                             cameraTargetPosition=self.pos[nth_drone, :],
+                                                             upAxisIndex=2,
+                                                             physicsClientId=self.CLIENT
+                                                            )
+        # DRONE_CAM_VIEW = p.computeViewMatrix(cameraEyePosition=self.pos[nth_drone, :]+np.array([0, 0, HEIGHT_ABOVE]),
+        #                                      cameraTargetPosition=target,
+        #                                      cameraUpVector=[0, 0, 1],
+        #                                      physicsClientId=self.CLIENT
+        #                                      )
         DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=60.0,
                                                       aspect=1.0,
-                                                      nearVal=self.L,
+                                                      nearVal=HEIGHT_ABOVE,
                                                       farVal=1000.0
                                                       )
         SEG_FLAG = p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX if segmentation else p.ER_NO_SEGMENTATION_MASK

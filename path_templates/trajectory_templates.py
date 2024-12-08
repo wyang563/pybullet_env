@@ -157,7 +157,7 @@ def generate_whale_init_conditions(object_color):
     start_dist = random.uniform(1, 2)
     orthogonal_dist = 0.4
 
-    # initialize 3 target objects representing whales
+    # initialize 2 target objects representing whales
     objects_relative = [(start_dist, -orthogonal_dist), (start_dist, orthogonal_dist)]
 
     objects_color = [object_color, "B" if object_color == "R" else "R"]
