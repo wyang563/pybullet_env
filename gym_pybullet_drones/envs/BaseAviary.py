@@ -13,8 +13,7 @@ import pybullet as p
 import pybullet_data
 import gym
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
-
-
+from scipy.spatial.transform import Rotation as R
 
 class BaseAviary(gym.Env):
     """Base class for "drone aviary" Gym environments."""
@@ -196,6 +195,9 @@ class BaseAviary(gym.Env):
                                                             farVal=1000.0
                                                             )
         #### Set initial poses #####################################
+        if self.NUM_DRONES > 1 and initial_xyzs is not None:
+            initial_xyzs.reshape(self.NUM_DRONES, 3)
+
         if initial_xyzs is None:
             self.INIT_XYZS = np.vstack([np.array([x*4*self.L for x in range(self.NUM_DRONES)]), \
                                         np.array([y*4*self.L for y in range(self.NUM_DRONES)]), \
@@ -457,7 +459,6 @@ class BaseAviary(gym.Env):
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.CLIENT)
         #### Load ground plane, drone and obstacles models #########
         self.PLANE_ID = p.loadURDF("plane.urdf", physicsClientId=self.CLIENT)
-
         self.DRONE_IDS = np.array([p.loadURDF(pkg_resources.resource_filename('gym_pybullet_drones', 'assets/'+self.URDF),
                                               self.INIT_XYZS[i,:],
                                               p.getQuaternionFromEuler(self.INIT_RPYS[i,:]),
@@ -564,24 +565,32 @@ class BaseAviary(gym.Env):
         if self.IMG_RES is None:
             print("[ERROR] in BaseAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
             exit()
-        rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
+        rot_mat = np.array(p.getEulerFromQuaternion(self.quat[nth_drone, :]))
+        drone_yaw = rot_mat[2]
+        # rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
+        # Define a 90-degree pitch rotation around Y-axis
+        pitch_angle = np.pi / 2  # 90 degrees in radians
+        pitch_rot = R.from_euler('y', pitch_angle, degrees=False).as_matrix()
+        rot_mat = np.dot(rot_mat, pitch_rot)
         #### Set target point, camera view and projection matrices #
-        target = np.dot(rot_mat,np.array([1000, 0, 0])) + np.array(self.pos[nth_drone, :])
+        target = np.dot(rot_mat, np.array([1000, 0, 0])) + np.array(self.pos[nth_drone, :])
         HEIGHT_ABOVE = self.L if self.L > 0 else 0.1
-        DRONE_CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=0.5,
-                                                             yaw=0,
+        DRONE_CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=-0.2 + self.pos[nth_drone, 2],
+                                                             yaw=drone_yaw * 180 / np.pi,
                                                              pitch=-90,
                                                              roll=0,
-                                                             cameraTargetPosition=self.pos[nth_drone, :],
+                                                             cameraTargetPosition=np.array([self.pos[nth_drone, 0], self.pos[nth_drone, 1], 0]),
                                                              upAxisIndex=2,
                                                              physicsClientId=self.CLIENT
                                                             )
-        # DRONE_CAM_VIEW = p.computeViewMatrix(cameraEyePosition=self.pos[nth_drone, :]+np.array([0, 0, HEIGHT_ABOVE]),
+        
+        # DRONE_CAM_VIEW = p.computeViewMatrix(cameraEyePosition=self.pos[nth_drone, :]+np.array([0.01, 0, -0.001]),
         #                                      cameraTargetPosition=target,
         #                                      cameraUpVector=[0, 0, 1],
         #                                      physicsClientId=self.CLIENT
-        #                                      )
-        DRONE_CAM_PRO =  p.computeProjectionMatrixFOV(fov=60.0,
+        #                                     )
+        
+        DRONE_CAM_PRO = p.computeProjectionMatrixFOV(fov=60.0,
                                                       aspect=1.0,
                                                       nearVal=HEIGHT_ABOVE,
                                                       farVal=1000.0

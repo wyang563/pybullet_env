@@ -11,7 +11,6 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics
 
 FILE_PREFIX = "/home/gridsan/wyang/.conda/envs/flex/lib/python3.9/site-packages/pybullet_data/"
 
-
 filename_map = {
     'R': f"{FILE_PREFIX}/sphere2red.urdf",
     'B': f"{FILE_PREFIX}/sphere2blue.urdf",
@@ -70,6 +69,7 @@ class CtrlAviary(BaseAviary):
 
         """
         self.CUSTOM_OBJECT_LOCATION = custom_obj_location
+        self.object_ids = {} # this map assumes all colors/objects in the scene are unique
         super().__init__(drone_model=drone_model,
                          num_drones=num_drones,
                          neighbourhood_radius=neighbourhood_radius,
@@ -87,7 +87,7 @@ class CtrlAviary(BaseAviary):
 
     ################################################################################
 
-    def addObject(self, color: str, xy_loc: tuple):
+    def addObject(self, color: str, xy_loc: tuple, globalScaling: float = 0.8):
         """Adds objects to the environment.
 
         This method is called by the parent class constructor.
@@ -102,7 +102,7 @@ class CtrlAviary(BaseAviary):
                 [*xy_loc, 0.6],
                 p.getQuaternionFromEuler([0,0,0]),
                 physicsClientId=self.CLIENT,
-                globalScaling=0.2
+                globalScaling=globalScaling
                 )
     
     def removeObject(self, obj_id):
@@ -122,13 +122,20 @@ class CtrlAviary(BaseAviary):
                 # add new urdf files at /home/makramchahine/miniconda3/envs/multimodal/lib/python3.8/site-packages/pybullet_data/samurai.urdf
 
                 print(f"added {color} at {location}")
-                
-                p.loadURDF(filename_map[color],
+                if color == 'cube':
+                    self.object_ids["cube"] = p.loadURDF(filename_map[color],
                         [*location, 0.1 + 0.5],
                         p.getQuaternionFromEuler([0,0,0]),
                         physicsClientId=self.CLIENT,
-                        globalScaling=0.2
+                        globalScaling=0.3
                         )
+                else:
+                    self.object_ids[color] = p.loadURDF(filename_map[color],
+                            [*location, 0.1 + 0.5],
+                            p.getQuaternionFromEuler([0,0,0]),
+                            physicsClientId=self.CLIENT,
+                            globalScaling=0.4
+                            )
             
         p.loadURDF(FILE_PREFIX + "samurai.urdf",
             physicsClientId=self.CLIENT

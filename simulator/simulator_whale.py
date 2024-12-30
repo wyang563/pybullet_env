@@ -20,16 +20,11 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.control.SimplePIDControl import SimplePIDControl
 from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.utils.utils import sync, str2bool
-
-from drone_causality.utils.model_utils import load_model_from_weights, generate_hidden_list, get_readable_name, \
-    get_params_from_json
-from drone_causality.keras_models import IMAGE_SHAPE
-from drone_causality.preprocess.process_data_util import resize_and_crop
-
 from simulator.simulator_utils import *
+from simulator.whale_model import WhaleDroneModel, WhaleDroneLeadModel
 
 DEFAULT_DRONES = DroneModel("cf2x")
-DEFAULT_NUM_DRONES = 1
+DEFAULT_NUM_DRONES = 3
 DEFAULT_PHYSICS = Physics("pyb")
 DEFAULT_VISION = False
 DEFAULT_GUI = False
@@ -44,9 +39,11 @@ DEFAULT_SAMPLING_FREQ_HQ = 3
 DEFAULT_COLAB = False
 DEFAULT_PARAMS_PATH = None
 DEFAULT_CHECKPOINT_PATH = None
+POINT_CLOUD_REGISTRATION = False
 
-H = 0.6
-vanish_mode = True
+SCOUT_H = 6.0
+H = 4.0
+vanish_mode = False
 
 def run_pybullet_only_hike(
         loc_color_tuple,
@@ -68,13 +65,10 @@ def run_pybullet_only_hike(
         colab=DEFAULT_COLAB,
         record_hz = DEFAULT_SAMPLING_FREQ_HQ
 ):
+    see_whales = False # True if lead drone sees whales, False otherwise
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
     print(f"ordered_locs: {ordered_locs}")
-
-    #### Initialize the model #############################
-    # get model params and load model
-    single_step_model = None # TODO: setup later
 
     #! Trajectory-specific parameters
     #* Env Params
@@ -83,26 +77,36 @@ def run_pybullet_only_hike(
     setup_folders(sim_dir, num_drones)
 
     Theta = random.random() * 2 * np.pi
-    Theta0 = Theta
+    Theta = 0
+    Theta0 = 0 # don't rotate the drone
     Theta_offset = 0 #random.choice([0.175 * np.pi, -0.175 * np.pi])
-
-    #* Save starting env params
-    with open(os.path.join(sim_dir, 'colors.txt'), 'w') as f:
-        f.write(str("".join(ordered_objs)))
     
     # ! Initialize drone locations + starting cube object
     y_offset = 0.1
     x_offset = random.uniform(0, 1)
-    rel_drone_locs = [(x_offset, y_offset)]
+    rel_drone_locs = [(x_offset, y_offset), (x_offset - 1, y_offset), (x_offset + 1, y_offset)]
+    rel_drone_locs = rel_drone_locs[:num_drones]
     ordered_objs.append("cube")
     ordered_locs.append((x_offset, y_offset))
 
+    #* Save starting env params
+    with open(os.path.join(sim_dir, 'colors.txt'), 'w') as f:
+        print(ordered_objs)
+        f.write(str("".join(ordered_objs)))
+        
     #* Object setup
     obj_loc_global = [convert_to_global(obj_loc_rel, Theta) for obj_loc_rel in ordered_locs]
     TARGET_LOCATIONS = obj_loc_global
     print(f"TARGET_LOCATIONS: {TARGET_LOCATIONS}")
-
-    INIT_XYZS = np.array([[*convert_to_global(rel_pos, Theta), H] for rel_pos in rel_drone_locs])
+    INIT_XYZS = []
+    for i, rel_pos in enumerate(rel_drone_locs):
+        if i == 0:
+            height = SCOUT_H
+        else:
+            height = H
+        INIT_XYZS.append([*convert_to_global(rel_pos, Theta), height])
+    INIT_XYZS = np.array(INIT_XYZS)
+    
     INIT_RPYS = np.array([[0, 0, Theta0 + Theta_offset] for d in range(num_drones)])
     AGGR_PHY_STEPS = int(simulation_freq_hz / control_freq_hz) if aggregate else 1
 
@@ -140,10 +144,22 @@ def run_pybullet_only_hike(
                                 "colors": ordered_objs,
                                 "locations": obj_loc_global
                             }
-                         )
+                        )
+    
+    #### Initialize the model #############################
+    drone_models = {}
+    for i in range(num_drones):
+        if i == 0:
+            drone_models[str(i)] = WhaleDroneLeadModel(drone_id=str(i), env=env, sim_dir=sim_dir, lead_drone=True, init_position=rel_drone_locs[i]) 
+        else:
+            drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), env=env, sim_dir=sim_dir, lead_drone=False) 
+
+    for i in range(num_drones):
+        drone_models[str(i)].set_other_drones(drone_models)
+
     env.IMG_RES = np.array([256, 144])
-    target_index = 0
-    alive_obj_id = env.addObject(ordered_objs[target_index], obj_loc_global[target_index])
+    # target_index = 0
+    # alive_obj_id = env.addObject(ordered_objs[target_index], obj_loc_global[target_index])
     previous_G = None
 
     #### Obtain the PyBullet Client ID from the environment ####
@@ -165,6 +181,8 @@ def run_pybullet_only_hike(
     #### Run the simulation ####################################
     CTRL_EVERY_N_STEPS = int(np.floor(env.SIM_FREQ / control_freq_hz))
     REC_EVERY_N_STEPS = int(np.floor(env.SIM_FREQ / DEFAULT_SAMPLING_FREQ_HQ))
+    print("CTRL EVERY N Steps: ", CTRL_EVERY_N_STEPS)
+    print("REC EVERY N Steps: ", REC_EVERY_N_STEPS)
     action = {str(i): np.array([0, 0, 0, 0]) for i in range(num_drones)}
     START = time.time()
     # STEPS = CTRL_EVERY_N_STEPS * NUM_WP
@@ -184,204 +202,147 @@ def run_pybullet_only_hike(
     vel_cmds = [[] for _ in range(num_drones)]
     value = np.array([0, 0, 0, 0, 0, 0])
     value = value[None,:]
-    alive_obj_previously_in_view = False
-    finished_within_time_flag = False
-    window_outcomes = []
-    range_outcomes = []
-    last_successful_ball_frame = 0
     SUCCESS_TIMEOUT = 13500 * 3 * 2
+
     for i in trange(0, int(STEPS), AGGR_PHY_STEPS):
-        if target_index > len(ordered_objs) - 1:
-            finished_within_time_flag = True
-            break
-        if i > last_successful_ball_frame + SUCCESS_TIMEOUT:
-            break
+        # State of drone at a time step
+        # np.hstack([self.pos[nth_drone, :], self.quat[nth_drone, :], self.rpy[nth_drone, :], self.vel[nth_drone, :], self.ang_v[nth_drone, :], self.last_clipped_action[nth_drone, :]])
 
         #### Step the simulation ###################################
         obs, reward, done, info = env.step(action)
         states = [obs[str(d)]["state"] for d in range(num_drones)]
-
+        for d in range(num_drones):
+            drone_models[str(d)].set_timestep()
         #### Compute control at the desired frequency ##############
         if i % REC_EVERY_N_STEPS == 0:
-            imgs = [[], []]
-            for d in range(num_drones):
-                rgb, dep, seg = env._getDroneImages(d)
-                env._exportImage(img_type=ImageType.RGB,
-                                 img_input=rgb,
-                                 path=f'{sim_dir}/pics{d}',
-                                 frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                 )
+            out = [[0 for _ in range(4)] for _ in range(num_drones)]
+            if not see_whales:
+                # get lead drone image
+                rgb, _, seg = env._getDroneImages(0)
+                if i % (REC_EVERY_N_STEPS * 10) == 0:
+                    env._exportImage(img_type=ImageType.RGB,
+                                    img_input=rgb,
+                                    path=f'{sim_dir}/pics0_search',
+                                    frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                    )
 
-                rgb = rgb[None,:,:,0:3]
-                # plt.imsave(f'{sim_dir}/rgb_images/rgb_{d}_{i}.png', rgb[0])
-                imgs[d] = rgb
-
-            # inputs = [*imgs, *hiddens]
-            inputs = [*imgs, np.array(1.0 / record_hz * 5).reshape(-1, 1), *hiddens]
-            out = single_step_model.predict(inputs)  ## output of model and outputs an action
-            vel_cmd = out[0][0]  # shape: 1 x 8
-            vel_cmd[0] = vel_cmd[0] * 0.5 #scale forward speed by 1/2
-            vel_cmds[0] = copy.deepcopy(vel_cmd[:4])
-            if num_drones > 1:
-                vel_cmds[1] = copy.deepcopy(vel_cmd[4:])
-                hiddens = out[1:]  # list num_hidden long, each el is batch x hidden_dim
+                pred = drone_models["0"].check_whales(seg, rgb)
+                if pred:
+                    print("DETECTED WHALES!!")
+                    see_whales = True
+                    drone_models["0"].mode = "whales"
+                else:
+                    out[0] = drone_models["0"].search_step(i)
+                
             else:
-                hiddens = out[1:]
+                for d in range(num_drones):
+                    rgb, _, seg = env._getDroneImages(d)
+                    if i % (REC_EVERY_N_STEPS * 10) == 0:
+                        env._exportImage(img_type=ImageType.RGB,
+                                        img_input=rgb,
+                                        path=f'{sim_dir}/pics{d}_track',
+                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                        )
+                        
+
+                    # lead drone tracks whale
+                    if d == 0:
+                        out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
+                        cur_pos = drone_models[str(d)].get_drone_state()[:2]
+                        drone_models[str(d)].track_stage_send_command(cur_pos)
+
+                    else:
+                        # follower drone receives command from scout drone
+                        out[d] = drone_models[str(d)].receive_command()
+                        if drone_models[str(d)].mode == "search":
+                            pred = drone_models[str(d)].check_whales(seg, rgb)
+                            if pred:
+                                print(f"DETECTED WHALES!! Drone {d}")
+                                drone_models[str(d)].mode = "whales"                       
+
+                    # rgb = rgb[None, :, :, :3]
+                    # imgs[d] = rgb
+                    # Run model to get drone velocity commands  
+            
+            for d in range(num_drones):
+                vel_cmds[d] = out[d].copy()
+
             # print([hiddens[i].shape for i in range(len(hiddens))])
             vel_cmd_world = copy.deepcopy(vel_cmds)
 
-            for d in range(num_drones):
-                # print(f"start vel_cmd: {vel_cmd_world}")
-                x, y, z = states[d][0], states[d][1], states[d][2]
-                yaw = states[d][9]
-                yaw_states[d].append(yaw)
-                yaw_rate_states[d].append(states[d][15])
-
-                # convert from body_frame to world_frame
-                vel_cmd_world[d][0] = vel_cmds[d][0] * np.cos(-yaw) + vel_cmds[d][1] * np.sin(-yaw)
-                vel_cmd_world[d][1] = -vel_cmds[d][0] * np.sin(-yaw)+ vel_cmds[d][1] * np.cos(-yaw)
-                # vel_cmd[d][2] = 0 # force vertical stability (z direction)
-
-                vel_state_world[d] = copy.deepcopy(states[d][10:13])
-                vel_state_body = copy.deepcopy(states[d][10:13])
-                # convert from world_frame to body_frame
-                vel_state_body[0] = vel_state_world[d][0] * np.cos(states[d][9]) + vel_state_world[d][1] * np.sin(states[d][9])
-                vel_state_body[1] = -vel_state_world[d][0] * np.sin(states[d][9]) + vel_state_world[d][1] * np.cos(states[d][9])
-                vels_states_body[d].append(vel_state_body)
-                
-                if object_in_view(x, y, yaw, obj_loc_global[target_index]):
-                    alive_obj_previously_in_view = True
-
-                if ordered_objs[target_index] == 'G' and z > 0.2:
-                    previous_G = {"id": alive_obj_id, "loc": obj_loc_global[target_index]}
-                    window_outcomes.append("G")
-
-                    alive_obj_previously_in_view = False
-                    target_index += 1
-                    if not (target_index > len(ordered_objs) - 1):
-                        env.addObject(ordered_objs[target_index], obj_loc_global[target_index])
-                elif previous_G is not None and not object_in_view(x, y, yaw, previous_G["loc"]):
-                    if object_in_range(x, y, previous_G["loc"]):
-                        range_outcomes.append("G")
-                    env.removeObject(previous_G["id"])
-                    previous_G = None
-                elif not object_in_view(x, y, yaw, obj_loc_global[target_index]) and alive_obj_previously_in_view:
-                    if (ordered_objs[target_index] == 'R' and drone_turned_left(x, y, yaw, obj_loc_global[target_index]) or (ordered_objs[target_index] == 'B' and drone_turned_right(x, y, yaw, obj_loc_global[target_index]))):
-                        window_outcomes.append(ordered_objs[target_index])
-                        last_successful_ball_frame = i
-                    elif ordered_objs[target_index] == 'R' or ordered_objs[target_index] == 'B':
-                        window_outcomes.append("N")
-                    if object_in_range(x, y, obj_loc_global[target_index]):
-                        range_outcomes.append(ordered_objs[target_index])
-                    
-                    alive_obj_previously_in_view = False
-                    target_index += 1
-                    env.removeObject(alive_obj_id)
-                    if not (target_index > len(ordered_objs) - 1):
-                        env.addObject(ordered_objs[target_index], obj_loc_global[target_index])
-
-
 
         if i % CTRL_EVERY_N_STEPS == 0:
-            time_data.append(CTRL_EVERY_N_STEPS * env.TIMESTEP * i)
-            ## Command loop
             for d in range(num_drones):
+                # action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP,
+                #                                             cur_pos=states[d][0:3],
+                #                                             cur_quat=states[d][3:7],
+                #                                             cur_vel=states[d][10:13],
+                #                                             cur_ang_vel=states[d][13:16],
+                #                                             target_pos=states[d][:3],  # same as the current position
+                #                                             target_rpy=np.array([0, 0, states[d][9]]),  # keep current yaw
+                #                                             target_vel=out[d][:3],
+                #                                             target_rpy_rates=np.array([0, 0, out[d][3]])
+                #                                             )
                 action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP,
-                                                              cur_pos=states[d][0:3],
-                                                              cur_quat=states[d][3:7],
-                                                              cur_vel=states[d][10:13],
-                                                              cur_ang_vel=states[d][13:16],
-                                                              target_pos=states[d][0:3],  # same as the current position
-                                                              target_rpy=np.array([0, 0, states[d][9]]),  # keep current yaw
-                                                              target_vel=vel_cmd_world[d][0:3],
-                                                              target_rpy_rates=np.array([0, 0, vel_cmds[d][3]])
-                                                              )
-
+                                            cur_pos=states[d][0:3],
+                                            cur_quat=states[d][3:7],
+                                            cur_vel=states[d][10:13],
+                                            cur_ang_vel=states[d][13:16],
+                                            target_pos=states[d][:3],  # same as the current position
+                                            target_rpy=np.array([0, 0, 0]),  # keep current yaw
+                                            target_vel=out[d][:3],
+                                            target_rpy_rates=np.array([0, 0, 0])
+                                            )
                 x_data[d].append(states[d][0])
                 y_data[d].append(states[d][1])
+                    
 
-                with open(sim_dir + f'/state{d}.csv', mode='a') as state_file:
-                    state_writer = csv.writer(state_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                    state_writer.writerow([i, *states[d]])
+            # plot path on grid
+            if i % (CTRL_EVERY_N_STEPS * 100) == 0:
+                for d in range(num_drones):
+                    with open(sim_dir + f'/state{d}.csv', mode='a') as state_file:
+                        state_writer = csv.writer(state_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                        state_writer.writerow([i, *states[d]])
 
-                with open(sim_dir + f'/vel_cmd{d}.csv', mode='a') as vel_cmd_file:
-                    vel_cmd_writer = csv.writer(vel_cmd_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                    vel_cmd_writer.writerow([i, *vel_cmds[d]])
+                    with open(sim_dir + f'/vel_cmd{d}.csv', mode='a') as vel_cmd_file:
+                        vel_cmd_writer = csv.writer(vel_cmd_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                        vel_cmd_writer.writerow([i, *vel_cmds[d]])
+                    
+            # plot path on grid TODO: update for all drones later
+            
+            if i % (CTRL_EVERY_N_STEPS * 500) == 0:
+                # Create one figure
+                plt.figure(figsize=(8, 6))
+                
+                for d in range(num_drones):
+                    data = pd.read_csv(os.path.join(sim_dir, f"state{d}.csv"))
+                    
+                    x = data.iloc[:, 1]
+                    y = data.iloc[:, 2]
+                    
+                    # Plot each drone's path on the same figure
+                    plt.plot(x, y, label=f"Drone {d} Path")
+                
+                # Plot the target locations
+                plt.scatter(obj_loc_global[0][0], obj_loc_global[0][1], 
+                            label="Target1", color='green')
+                plt.scatter(obj_loc_global[1][0], obj_loc_global[1][1], 
+                            label="Target2", color='blue')
+                
+                # Label, title, legend
+                plt.xlabel("X")
+                plt.ylabel("Y")
+                plt.title("Drone Paths")
+                plt.legend()
+                
+                # Save and close
+                plt.savefig(os.path.join(sim_dir, "all_drones_paths.jpg"), dpi=300)
+                plt.close()
 
         #### Sync the simulation ###################################
         if gui:
             sync(i, START, env.TIMESTEP)
 
     env.close()
-    logger.save_as_csv(sim_name)  # Optional CSV save
-
-    if window_outcomes == []:
-        window_outcomes.append("X")
-    if range_outcomes == []:
-        range_outcomes.append("X")
-
-    try:
-        with open(os.path.join(sim_dir, 'finish.txt'), 'w') as f:
-            max_len = max(len(window_outcomes), len(range_outcomes), len(ordered_objs))
-            # pad window_outcomes, range_outcomes, ordered_objs with X's if they are too short
-            window_outcomes = window_outcomes + ['X'] * (max_len - len(window_outcomes))
-            range_outcomes = range_outcomes + ['X'] * (max_len - len(range_outcomes))
-            ordered_objs = ordered_objs + ['X'] * (max_len - len(ordered_objs))
-
-            for window_outcome, range_outcome, color in zip(window_outcomes, range_outcomes, ordered_objs):
-                f.write(f"{window_outcome},{range_outcome},{color}\n")
-    except Exception as e:
-        print(e)
-
-
-    # plot XY data
-    time_data, x_data, y_data = np.array(time_data), np.array(x_data), np.array(y_data)
-    fig, ax = plt.subplots()
-    ax.plot(x_data[0], y_data[0])
-    if num_drones > 1:
-        ax.plot(x_data[1], y_data[1])
-    for target in TARGET_LOCATIONS:
-        ax.plot(target[0], target[1], 'ro')
-
-    ax.legend(["Leader", "Follower"])
-    ax.set_title(f"XY Positions @ {DEFAULT_SAMPLING_FREQ_HQ}Hz")
-    fig.savefig(sim_dir + "/path.jpg")
-
-
-    # plot vel, yaw, and yaw_rate states and predictions
-    vels_states_body = np.array(vels_states_body)
-    yaw_states = np.array(yaw_states)
-    yaw_rate_states = np.array(yaw_rate_states)
-    for d in range(num_drones):
-        fig, axs = plt.subplots(2, 2, figsize=(7.5, 5))
-        axs = axs.flatten()
-
-        with open(sim_dir + f'/vel_cmd{d}.csv', mode='r') as vel_cmd_file:
-            vel_cmd_reader = csv.reader(vel_cmd_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-            vel_cmd = []
-            for row in vel_cmd_reader:
-                vel_cmd.append(row)
-            vel_cmd = np.array(vel_cmd).astype(float)
-        
-            t = np.linspace(0, 1, len(vel_cmd))  # time variable
-            for i, (title, ax) in enumerate(zip(["vx_pred", "vy_pred", "vz_pred", "yaw_rate_pred"], axs)):
-                ax.plot(t, vel_cmd[:,i+1], label=title)
-
-        t = np.linspace(0, 1, len(vels_states_body[d]))  # time variable
-        axs[0].plot(t, vels_states_body[d][:, 0], label="vx_obs_body")
-        axs[1].plot(t, vels_states_body[d][:, 1], label="vy_obs_body")
-        axs[2].plot(t, vels_states_body[d][:, 2], label="vz_obs")
-        axs[3].plot(t, yaw_states[d], label="yaw_obs")
-        axs[3].plot(t, yaw_rate_states[d], label="yaw_rate_obs")
-
-        fig.suptitle(f'Velocity/Yaw Pred. and Obs. D{d}')
-
-        for ax in axs:
-            ax.legend()
-        fig.savefig(f'{sim_dir}/vels{d}.png')
-
-    # save labels as csv
-    with open(sim_dir + "/labels.csv", 'wb') as out_file:
-        np.savetxt(out_file, np.array(LABELS), delimiter=",", fmt="%s")
 
 

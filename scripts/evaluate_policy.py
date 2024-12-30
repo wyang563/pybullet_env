@@ -40,8 +40,14 @@ def generate_trajectories(config):
             locations_rel.append(locations)
     else:
         # TODO: Fix with config if need to use single-step eval
-        objects = ['R', 'B']
-        locations_rel = [(random.uniform(*config['starting_distance_range']), 0)]
+
+        # random location initializtion 
+        objects = ['B', 'G']
+        sign = random.choice([-1, 1])
+        x_incr = random.uniform(0.5, 1)
+        start_x = sign * random.uniform(4, 9)
+        start_y = random.uniform(4, 9)
+        locations_rel = [(start_x + x_incr, start_y + 0.5), (start_x - x_incr, start_y - 0.5)]
 
     return objects, locations_rel
 
@@ -105,7 +111,7 @@ if __name__ == "__main__":
     objects, locations_rel = generate_trajectories(config)
 
     # Run simulations
-    run_pybullet_only_hike(list(zip(objects, locations_rel)), 
+    run_pybullet_only_hike([objects, locations_rel], 
                            output_folder="whale_results", 
                            duration_sec=config['duration_sec'],
                            record_hz=3

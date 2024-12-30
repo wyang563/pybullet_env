@@ -57,11 +57,15 @@ def convert_array_to_global(array, Theta):
 def setup_folders(sim_dir, num_drones):
     if not os.path.exists(sim_dir):
         os.makedirs(sim_dir + '/')
+    if not os.path.exists(sim_dir + '/pics0_search'):
+        os.makedirs(sim_dir + '/pics0_search/')
+    if not os.path.exists(sim_dir + '/debug'):
+        os.makedirs(sim_dir + '/debug/')
     for d in range(num_drones):
-        if not os.path.exists(sim_dir + f"/pics{d}"):
-            os.makedirs(sim_dir + f"/pics{d}/")
-        if not os.path.exists(sim_dir + f"/pybullet_pics{d}"):
-            os.makedirs(sim_dir + f"/pybullet_pics{d}/")
+        if not os.path.exists(sim_dir + f"/pics{d}_track"):
+            os.makedirs(sim_dir + f"/pics{d}_track/")
+        if not os.path.exists(sim_dir + f"/segment_pics{d}"):
+            os.makedirs(sim_dir + f"/segment_pics{d}/")
 
 def add_random_targets(target_colors, target_locations, LCR_obj_xy, LCR_obj_colors):
     sampled_order = random.sample(PERMUTATIONS_COLORS, 1)[0]
