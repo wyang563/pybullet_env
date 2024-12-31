@@ -12,7 +12,10 @@ DEFAULT_SPEED = 0.12
 WHALE_TRACK_SPEED = 0.05
 VERT_TIME = 2200
 TURN_TIME = 4800
+LANDING_SPEED = -0.2
+LANDING_HEIGHT = 0.5
 CRUISE_HEIGHT = 4
+IN_POSITION_DIST = 1.1 # distance tracking drones to search drone to be considered in position
 CTRL_DIST = 0.25
 
 class WhaleDroneModel:
@@ -159,19 +162,43 @@ class WhaleDroneModel:
                 if dist < CTRL_DIST:
                     return True
         return False
+
+    # tracking stage functions
+    def track_whale(self, seg, rgb):
+        centers = self.segment_image(seg)
+        whale_centers = []
+        for x, y in centers:
+            if self.check_color(rgb[int(x), int(y)]):
+                whale_centers.append((y, x))
         
+        whale_centers.sort()
+        # drone 1 targets left whale
+        if self.drone_id == "1":
+            target_center = whale_centers[0]
+        # drone 2 targets right whale
+        else:
+            target_center = whale_centers[1]
 
+        # check if we're centered on whale
+        target_center = [target_center[1], target_center[0]]
+        if (target_center[0] - seg.shape[0] // 2)**2 + (target_center[1] - seg.shape[1] // 2)**2 < 10:
+            return [0, 0, 0, 0], True
+        return self.pixel_to_world_velocity(target_center, seg.shape), False
+
+    # landing logic
+    def land_drone(self):
+        if self.get_drone_state()[2] < LANDING_HEIGHT:
+            return [0, 0, 0, 0], True
+        return [0, 0, LANDING_SPEED, 0], False
+    
     # receiving server side commands
-
     def calc_velocity_to_point(self, target_point):
         x, y = self.get_drone_state()[:2]
         dx, dy = target_point[0] - x, target_point[1] - y
-
         # calculate velocity to reach target point
         incr_constant = np.sqrt(DEFAULT_SPEED ** 2 / (dx ** 2 + dy ** 2))
         return [dx * incr_constant, dy * incr_constant, 0, 0]
         # rot_velocity = self.rotate_velocity([dx * incr_constant, dy * incr_constant])
-        # return rot_velocity + [0, 0]
 
     def receive_command(self):
         # check if we aren't too close to another drone, only freeze if we are drone 2
@@ -279,10 +306,22 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                     self.start_turning_timestep = timestep
                     self.turn_target_yaw = -np.pi / 2
             return [0, -SEARCH_SPEED, 0, 0]
-        
-    # tracking stagae functions
-    def get_alignment_line(self):
-        pass
+    
+    def all_drones_in_position(self):
+        search_drone_pos = self.get_drone_state()[:2]
+        for drone in self.other_drones:
+            if drone != self.drone_id:
+                drone_pos = self.other_drones[drone].get_drone_state()[:2]
+                if np.linalg.norm(np.array(drone_pos) - np.array(search_drone_pos)) > IN_POSITION_DIST:
+                    return False
+        return True
+    
+    def all_drones_landed(self):
+        for drone in self.other_drones:
+            if drone != self.drone_id:
+                if self.other_drones[drone].mode != "complete":
+                    return False
+        return True
 
     # send commands to other drones
 

@@ -65,7 +65,6 @@ def run_pybullet_only_hike(
         colab=DEFAULT_COLAB,
         record_hz = DEFAULT_SAMPLING_FREQ_HQ
 ):
-    see_whales = False # True if lead drone sees whales, False otherwise
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
     print(f"ordered_locs: {ordered_locs}")
@@ -158,19 +157,6 @@ def run_pybullet_only_hike(
         drone_models[str(i)].set_other_drones(drone_models)
 
     env.IMG_RES = np.array([256, 144])
-    # target_index = 0
-    # alive_obj_id = env.addObject(ordered_objs[target_index], obj_loc_global[target_index])
-    previous_G = None
-
-    #### Obtain the PyBullet Client ID from the environment ####
-    PYB_CLIENT = env.getPyBulletClient()
-
-    #### Initialize the logger #################################
-    logger = Logger(logging_freq_hz=control_freq_hz,
-                    num_drones=num_drones,
-                    output_folder=output_folder,
-                    colab=colab
-                    )
 
     #### Initialize the controllers ############################
     if drone in [DroneModel.CF2X, DroneModel.CF2P]:
@@ -190,33 +176,24 @@ def run_pybullet_only_hike(
     # STEPS = int(100 * 90 * 90) * 2
     # 30 seconds * 240 steps/sec
     STEPS = int(100 * 30 * 240) * 2
-
-    time_data = []
     x_data = [[] for _ in range(num_drones)]
     y_data = [[] for _ in range(num_drones)]
-    vels_states_body = [[] for _ in range(num_drones)]
-    yaw_states = [[] for _ in range(num_drones)]
-    yaw_rate_states = [[] for _ in range(num_drones)]
-    LABELS = []
-    vel_state_world = [[] for _ in range(num_drones)]
-    vel_cmds = [[] for _ in range(num_drones)]
     value = np.array([0, 0, 0, 0, 0, 0])
     value = value[None,:]
-    SUCCESS_TIMEOUT = 13500 * 3 * 2
 
     for i in trange(0, int(STEPS), AGGR_PHY_STEPS):
         # State of drone at a time step
         # np.hstack([self.pos[nth_drone, :], self.quat[nth_drone, :], self.rpy[nth_drone, :], self.vel[nth_drone, :], self.ang_v[nth_drone, :], self.last_clipped_action[nth_drone, :]])
 
         #### Step the simulation ###################################
-        obs, reward, done, info = env.step(action)
+        obs, _, _, _ = env.step(action)
         states = [obs[str(d)]["state"] for d in range(num_drones)]
         for d in range(num_drones):
             drone_models[str(d)].set_timestep()
         #### Compute control at the desired frequency ##############
         if i % REC_EVERY_N_STEPS == 0:
             out = [[0 for _ in range(4)] for _ in range(num_drones)]
-            if not see_whales:
+            if drone_models[str(0)].mode == "search":
                 # get lead drone image
                 rgb, _, seg = env._getDroneImages(0)
                 if i % (REC_EVERY_N_STEPS * 10) == 0:
@@ -228,13 +205,12 @@ def run_pybullet_only_hike(
 
                 pred = drone_models["0"].check_whales(seg, rgb)
                 if pred:
-                    print("DETECTED WHALES!!")
-                    see_whales = True
+                    print("LEAD DRONE DETECTED WHALES!!")
                     drone_models["0"].mode = "whales"
                 else:
                     out[0] = drone_models["0"].search_step(i)
                 
-            else:
+            elif drone_models[str(0)].mode == "whales":
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
                     if i % (REC_EVERY_N_STEPS * 10) == 0:
@@ -254,35 +230,42 @@ def run_pybullet_only_hike(
                     else:
                         # follower drone receives command from scout drone
                         out[d] = drone_models[str(d)].receive_command()
-                        if drone_models[str(d)].mode == "search":
-                            pred = drone_models[str(d)].check_whales(seg, rgb)
-                            if pred:
-                                print(f"DETECTED WHALES!! Drone {d}")
-                                drone_models[str(d)].mode = "whales"                       
 
-                    # rgb = rgb[None, :, :, :3]
-                    # imgs[d] = rgb
-                    # Run model to get drone velocity commands  
-            
-            for d in range(num_drones):
-                vel_cmds[d] = out[d].copy()
+                # check all other drones are in view of drone
+                if drone_models["0"].all_drones_in_position():
+                    print("ALL DRONES IN POSITION: SWITCHING TO TRACKING MODE")
+                    for d in range(num_drones):
+                        drone_models[str(d)].mode = "tracking"
 
-            # print([hiddens[i].shape for i in range(len(hiddens))])
-            vel_cmd_world = copy.deepcopy(vel_cmds)
-
+            # tracking mode
+            elif drone_models[str(0)].mode == "tracking":
+                for d in range(num_drones):
+                    rgb, _, seg = env._getDroneImages(d)
+                    if i % (REC_EVERY_N_STEPS * 10) == 0:
+                        env._exportImage(img_type=ImageType.RGB,
+                                        img_input=rgb,
+                                        path=f'{sim_dir}/pics{d}_track',
+                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                        )
+                    if d == 0:
+                        out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
+                    elif drone_models[str(d)].mode == "tracking":
+                        out[d], centered = drone_models[str(d)].track_whale(seg, rgb)
+                        if centered:
+                            drone_models[str(d)].mode = "landing"
+                            print(f"Drone {d} is centered on whale: switching to landing mode")
+                    # landing mode
+                    else:
+                        out[d], landed = drone_models[str(d)].land_drone()
+                        if landed:
+                            print(f"Drone {d} has landed")
+                            drone_models[str(d)].mode = "complete"
+                            out[d] = [0, 0, 0, 0]
+            else:
+                raise Exception("Invalid mode")
 
         if i % CTRL_EVERY_N_STEPS == 0:
             for d in range(num_drones):
-                # action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP,
-                #                                             cur_pos=states[d][0:3],
-                #                                             cur_quat=states[d][3:7],
-                #                                             cur_vel=states[d][10:13],
-                #                                             cur_ang_vel=states[d][13:16],
-                #                                             target_pos=states[d][:3],  # same as the current position
-                #                                             target_rpy=np.array([0, 0, states[d][9]]),  # keep current yaw
-                #                                             target_vel=out[d][:3],
-                #                                             target_rpy_rates=np.array([0, 0, out[d][3]])
-                #                                             )
                 action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP,
                                             cur_pos=states[d][0:3],
                                             cur_quat=states[d][3:7],
@@ -296,6 +279,15 @@ def run_pybullet_only_hike(
                 x_data[d].append(states[d][0])
                 y_data[d].append(states[d][1])
                     
+            # apply external forces to ball objects to simulate whale movement with random force direction
+            fx = random.uniform(12, 18)
+            fx_sign = random.choice([-1, 1])
+            fy = random.uniform(12, 18)
+            fy_sign = random.choice([-1, 1])
+            B_pos = p.getBasePositionAndOrientation(env.object_ids["B"])[0]
+            G_pos = p.getBasePositionAndOrientation(env.object_ids["G"])[0]
+            p.applyExternalForce(objectUniqueId=env.object_ids["B"], linkIndex=-1, forceObj=[fx_sign * fx, fy_sign * fy, 0], posObj=B_pos, flags=p.WORLD_FRAME)
+            p.applyExternalForce(objectUniqueId=env.object_ids["G"], linkIndex=-1, forceObj=[fx_sign * fx, fy_sign * fy, 0], posObj=G_pos, flags=p.WORLD_FRAME)
 
             # plot path on grid
             if i % (CTRL_EVERY_N_STEPS * 100) == 0:
@@ -303,10 +295,16 @@ def run_pybullet_only_hike(
                     with open(sim_dir + f'/state{d}.csv', mode='a') as state_file:
                         state_writer = csv.writer(state_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                         state_writer.writerow([i, *states[d]])
-
+ 
                     with open(sim_dir + f'/vel_cmd{d}.csv', mode='a') as vel_cmd_file:
                         vel_cmd_writer = csv.writer(vel_cmd_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                        vel_cmd_writer.writerow([i, *vel_cmds[d]])
+                        vel_cmd_writer.writerow([i, *out[d]])
+                
+                B_pos = p.getBasePositionAndOrientation(env.object_ids["B"])[0]
+                G_pos = p.getBasePositionAndOrientation(env.object_ids["G"])[0]
+                with open(sim_dir + '/target_pos.csv', mode='a') as f:
+                    target_pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                    target_pos_writer.writerow([i, *B_pos, *G_pos, fx, fy])
                     
             # plot path on grid TODO: update for all drones later
             
@@ -323,11 +321,16 @@ def run_pybullet_only_hike(
                     # Plot each drone's path on the same figure
                     plt.plot(x, y, label=f"Drone {d} Path")
                 
+                # plot target path
+                for i in range(2):
+                    data = pd.read_csv(os.path.join(sim_dir, f"target_pos.csv"))
+                    x = data.iloc[:, 1 + 3 * i]
+                    y = data.iloc[:, 2 + 3 * i]
+                    plt.plot(x, y, label=f"Target {i} Path")
+                
                 # Plot the target locations
-                plt.scatter(obj_loc_global[0][0], obj_loc_global[0][1], 
-                            label="Target1", color='green')
-                plt.scatter(obj_loc_global[1][0], obj_loc_global[1][1], 
-                            label="Target2", color='blue')
+                plt.scatter(B_pos[0], B_pos[1], label="Target1", color='blue')
+                plt.scatter(G_pos[0], G_pos[1], label="Target2", color='green')
                 
                 # Label, title, legend
                 plt.xlabel("X")
@@ -342,6 +345,10 @@ def run_pybullet_only_hike(
         #### Sync the simulation ###################################
         if gui:
             sync(i, START, env.TIMESTEP)
+
+        # check if all drones have landed
+        if drone_models["0"].all_drones_landed():
+            break
 
     env.close()
 
