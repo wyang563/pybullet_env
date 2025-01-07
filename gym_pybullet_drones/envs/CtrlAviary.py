@@ -2,9 +2,11 @@ import numpy as np
 from gym import spaces
 import pybullet as p
 import pybullet_data
+import random
 
 from gym_pybullet_drones.envs.BaseAviary import BaseAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from collections import defaultdict
 
 # If you don't have these urdfs in the pybullet_data package, 
 # run gym-pybullet-drones/gym_pybullet_drones/assets/copy_assets_to_pybullet_data_folder.py
@@ -69,7 +71,7 @@ class CtrlAviary(BaseAviary):
 
         """
         self.CUSTOM_OBJECT_LOCATION = custom_obj_location
-        self.object_ids = {} # this map assumes all colors/objects in the scene are unique
+        self.object_ids = defaultdict(list) # this map assumes all colors/objects in the scene are unique
         super().__init__(drone_model=drone_model,
                          num_drones=num_drones,
                          neighbourhood_radius=neighbourhood_radius,
@@ -123,19 +125,20 @@ class CtrlAviary(BaseAviary):
 
                 print(f"added {color} at {location}")
                 if color == 'cube':
-                    self.object_ids["cube"] = p.loadURDF(filename_map[color],
+                    self.object_ids["cube"].append(p.loadURDF(filename_map[color],
                         [*location, 0.1 + 0.5],
                         p.getQuaternionFromEuler([0,0,0]),
                         physicsClientId=self.CLIENT,
                         globalScaling=0.3
-                        )
+                        ))
                 else:
-                    self.object_ids[color] = p.loadURDF(filename_map[color],
+                    # ball_size = random.uniform(0.35, 0.6)
+                    self.object_ids[color].append(p.loadURDF(filename_map[color],
                             [*location, 0.1 + 0.5],
                             p.getQuaternionFromEuler([0,0,0]),
                             physicsClientId=self.CLIENT,
-                            globalScaling=0.4
-                            )
+                            globalScaling=0.4,
+                            ))
             
         p.loadURDF(FILE_PREFIX + "samurai.urdf",
             physicsClientId=self.CLIENT

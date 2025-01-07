@@ -12,17 +12,18 @@ DEFAULT_SPEED = 0.12
 WHALE_TRACK_SPEED = 0.05
 VERT_TIME = 2200
 TURN_TIME = 4800
-LANDING_SPEED = -0.2
+LANDING_SPEED = -0.35
 LANDING_HEIGHT = 0.5
 CRUISE_HEIGHT = 4
 IN_POSITION_DIST = 1.1 # distance tracking drones to search drone to be considered in position
 CTRL_DIST = 0.25
 
 class WhaleDroneModel:
-    def __init__(self, drone_id, env, sim_dir, lead_drone=False):
+    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone=False):
         self.drone_id = drone_id # IMPORTANT: drone_id is the index of the drone in our drones list
         self.mode = "search"
         self.lead_drone = lead_drone
+        self.num_drones = num_drones
         self.env = env
         self.turning = False
         self.turn_target_yaw = None
@@ -68,7 +69,7 @@ class WhaleDroneModel:
         if pixel[1] > 150 and pixel[0] < 60 and pixel[2] < 60:
             return True
         # blue
-        elif pixel[2] > 210 and pixel[0] < 60 and pixel[1] < 60:
+        elif pixel[2] > 150 and pixel[0] < 60 and pixel[1] < 60:
             return True
         return False
 
@@ -121,7 +122,7 @@ class WhaleDroneModel:
         count = 0
         for x, y in centers:
             count += int(self.check_color(rgb[int(x), int(y)]))
-        return count > 1
+        return count >= self.num_drones - 1
     
     def pixel_to_world_velocity(self, pixel_coord, img_dims):
         '''
@@ -158,7 +159,7 @@ class WhaleDroneModel:
         for drone in self.other_drones:
             if drone != self.drone_id:
                 drone_state = self.other_drones[drone].get_drone_state()
-                dist = np.linalg.norm(np.array(drone_state[:2]) - np.array(self.get_drone_state()[:2]))
+                dist = np.linalg.norm(np.array(drone_state[:3]) - np.array(self.get_drone_state()[:3]))
                 if dist < CTRL_DIST:
                     return True
         return False
@@ -172,18 +173,16 @@ class WhaleDroneModel:
                 whale_centers.append((y, x))
         
         whale_centers.sort()
-        # drone 1 targets left whale
-        if self.drone_id == "1":
-            target_center = whale_centers[0]
-        # drone 2 targets right whale
-        else:
-            target_center = whale_centers[1]
-
-        # check if we're centered on whale
-        target_center = [target_center[1], target_center[0]]
-        if (target_center[0] - seg.shape[0] // 2)**2 + (target_center[1] - seg.shape[1] // 2)**2 < 10:
-            return [0, 0, 0, 0], True
-        return self.pixel_to_world_velocity(target_center, seg.shape), False
+        try:
+            target_center = whale_centers[int(self.drone_id) - 1]
+            # check if we're centered on whale
+            target_center = [target_center[1], target_center[0]]
+            if (target_center[0] - seg.shape[0] // 2)**2 + (target_center[1] - seg.shape[1] // 2)**2 < 10:
+                return [0, 0, 0, 0], True
+            return self.pixel_to_world_velocity(target_center, seg.shape), False
+        except:
+            print("target center error")
+            return [0, 0, 0, 0], False
 
     # landing logic
     def land_drone(self):
@@ -218,6 +217,19 @@ class WhaleDroneModel:
         # reset input channel
         self.in_command = None
 
+    # accessing image files
+    def get_latest_images(self, img_type, last_n=1):
+        if img_type == "rgb":
+            file_dir = f"{self.sim_dir}/pics{self.drone_id}_track"
+        elif img_type == "seg":
+            file_dir = f"{self.sim_dir}/segment_pics{self.drone_id}"
+        else:
+            raise ValueError("Invalid image type")
+        result = []
+        for img in sorted(os.listdir(file_dir))[-last_n:]:
+            result.append(cv2.imread(f"{file_dir}/{img}"))
+        return result
+    
     # debugging
     def write_debug_file(self, debug_strs):
         with open(self.debug_file, 'a') as f:
@@ -227,13 +239,14 @@ class WhaleDroneModel:
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
-    def __init__(self, drone_id, env, sim_dir, lead_drone, init_position):
-        super().__init__(drone_id=drone_id, env=env, sim_dir=sim_dir, lead_drone=lead_drone)
+    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position):
+        super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, lead_drone=lead_drone)
         self.search_state = 0 # 0: flying (1, 1), 1: flying -x direction, 2: flying x direction, 3: flying vertically, 4: turning
         self.start_vertical_timestep = 0 # timestep when drone starts moving vertically
         self.start_turning_timestep = 0
         self.target_y = 0
         self.init_velocity = [(9.0 - init_position[0]) / 24, (9 - init_position[1]) / 24, 0, 0]
+        self.search_target_points = [] # (dx, dy) for the positions that each tagging drone should be at relative to search drone before tracking commences
         print("LEAD DRONE INIT VELOCITY IS: ", self.init_velocity)
 
     def stop_turn(self, timestep):
@@ -306,13 +319,24 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                     self.start_turning_timestep = timestep
                     self.turn_target_yaw = -np.pi / 2
             return [0, -SEARCH_SPEED, 0, 0]
+        
+    def calc_search_target_points(self):
+        search_width = min(self.num_drones - 2, 2.5)
+        dx = -search_width / 2
+        dy = 0
+        for _ in range(self.num_drones - 1):
+            self.search_target_points.append((dx, dy))
+            dx += search_width / (self.num_drones - 2)
     
     def all_drones_in_position(self):
         search_drone_pos = self.get_drone_state()[:2]
         for drone in self.other_drones:
             if drone != self.drone_id:
                 drone_pos = self.other_drones[drone].get_drone_state()[:2]
-                if np.linalg.norm(np.array(drone_pos) - np.array(search_drone_pos)) > IN_POSITION_DIST:
+                dx = self.search_target_points[int(drone) - 1][0]
+                if np.linalg.norm(np.array(drone_pos) - np.array(search_drone_pos)) > abs(dx) + 0.2:
+                    return False
+                if self.other_drones[drone].mode != "whales":
                     return False
         return True
     
@@ -337,17 +361,8 @@ class WhaleDroneLeadModel(WhaleDroneModel):
 
     # for lead drone to send fly commands to all drones during whale tracking phase
     def track_stage_send_command(self, cur_pos):
-        dx, dy = cur_pos[0], cur_pos[1]
-        if "1" in self.other_drones:
-            self.send_command_drone("fly-to", f"{dx - 1},{dy}", "1")
-        if "2" in self.other_drones:
-            self.send_command_drone("fly-to", f"{dx + 1},{dy}", "2")
-        
-
-
-
-    
-
-    
-
+        x, y = cur_pos[0], cur_pos[1]
+        for i in range(1, self.num_drones):
+            dx, dy = self.search_target_points[i - 1]
+            self.send_command_drone("fly-to", f"{x + dx},{y + dy}", str(i))
     

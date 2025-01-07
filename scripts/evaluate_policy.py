@@ -12,7 +12,7 @@ import tomli
 
 from simulator.simulator_whale import run_pybullet_only_hike
 
-def generate_trajectories(config):
+def generate_trajectories(config, num_objects):
     if config['multi_step_objects']:
         objects = config['objects']
         locations_rel = []
@@ -40,14 +40,16 @@ def generate_trajectories(config):
             locations_rel.append(locations)
     else:
         # TODO: Fix with config if need to use single-step eval
-
-        # random location initializtion 
-        objects = ['B', 'G']
+        objects = num_objects * ['B']
         sign = random.choice([-1, 1])
-        x_incr = random.uniform(0.5, 1)
-        start_x = sign * random.uniform(4, 9)
-        start_y = random.uniform(4, 9)
-        locations_rel = [(start_x + x_incr, start_y + 0.5), (start_x - x_incr, start_y - 0.5)]
+        start_x = sign * random.uniform(4, 8)
+        start_y = random.uniform(4, 8)
+        locations_rel = []
+        for _ in range(num_objects):
+            dx = random.choice([-1, 1]) * random.uniform(0.5, 1)
+            dy = random.choice([-1, 1]) * random.uniform(0.5, 1)
+            locations_rel.append((start_x + dx, start_y + dy))
+        locations_rel = [(4, 4), (5.3, 5), (4.4, 5), (5, 4), (4.5, 4.5)]
 
     return objects, locations_rel
 
@@ -108,13 +110,15 @@ if __name__ == "__main__":
         config = tomli.load(f)
 
     # Generate trajectories
-    objects, locations_rel = generate_trajectories(config)
+    N = 5 # CONFIG: total number of balls 
+    objects, locations_rel = generate_trajectories(config, num_objects=N)
 
     # Run simulations
     run_pybullet_only_hike([objects, locations_rel], 
                            output_folder="whale_results", 
                            duration_sec=config['duration_sec'],
-                           record_hz=3
+                           record_hz=3,
+                           num_drones=N+1
                            )
     
     # joblib.Parallel(n_jobs=config['n_jobs'])(

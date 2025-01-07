@@ -40,9 +40,10 @@ DEFAULT_COLAB = False
 DEFAULT_PARAMS_PATH = None
 DEFAULT_CHECKPOINT_PATH = None
 POINT_CLOUD_REGISTRATION = False
+MOVE_WHALES = False
 
-SCOUT_H = 6.0
-H = 4.0
+SCOUT_H = 7.0
+H = 5.0
 vanish_mode = False
 
 def run_pybullet_only_hike(
@@ -83,8 +84,14 @@ def run_pybullet_only_hike(
     # ! Initialize drone locations + starting cube object
     y_offset = 0.1
     x_offset = random.uniform(0, 1)
-    rel_drone_locs = [(x_offset, y_offset), (x_offset - 1, y_offset), (x_offset + 1, y_offset)]
-    rel_drone_locs = rel_drone_locs[:num_drones]
+    rel_drone_locs = [(x_offset, y_offset)] # lean drone loc
+    width = - (num_drones / 4)
+    for i in range(num_drones - 1):
+        rel_drone_locs.append((width + x_offset, y_offset))
+        width += num_drones / 4
+
+
+    print("REL DRONE LOCS: ", rel_drone_locs)
     ordered_objs.append("cube")
     ordered_locs.append((x_offset, y_offset))
 
@@ -149,9 +156,17 @@ def run_pybullet_only_hike(
     drone_models = {}
     for i in range(num_drones):
         if i == 0:
-            drone_models[str(i)] = WhaleDroneLeadModel(drone_id=str(i), env=env, sim_dir=sim_dir, lead_drone=True, init_position=rel_drone_locs[i]) 
+            drone_models[str(i)] = WhaleDroneLeadModel(drone_id=str(i), 
+                                                       env=env, sim_dir=sim_dir, 
+                                                       num_drones=num_drones,
+                                                       lead_drone=True, 
+                                                       init_position=rel_drone_locs[i]) 
         else:
-            drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), env=env, sim_dir=sim_dir, lead_drone=False) 
+            drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), 
+                                                   env=env, 
+                                                   num_drones=num_drones,
+                                                   sim_dir=sim_dir, 
+                                                   lead_drone=False) 
 
     for i in range(num_drones):
         drone_models[str(i)].set_other_drones(drone_models)
@@ -171,10 +186,6 @@ def run_pybullet_only_hike(
     print("REC EVERY N Steps: ", REC_EVERY_N_STEPS)
     action = {str(i): np.array([0, 0, 0, 0]) for i in range(num_drones)}
     START = time.time()
-    # STEPS = CTRL_EVERY_N_STEPS * NUM_WP
-    # STEPS = int(100 * 90 * 240.0 * record_hz / 8.0) * 2
-    # STEPS = int(100 * 90 * 90) * 2
-    # 30 seconds * 240 steps/sec
     STEPS = int(100 * 30 * 240) * 2
     x_data = [[] for _ in range(num_drones)]
     y_data = [[] for _ in range(num_drones)]
@@ -190,6 +201,7 @@ def run_pybullet_only_hike(
         states = [obs[str(d)]["state"] for d in range(num_drones)]
         for d in range(num_drones):
             drone_models[str(d)].set_timestep()
+
         #### Compute control at the desired frequency ##############
         if i % REC_EVERY_N_STEPS == 0:
             out = [[0 for _ in range(4)] for _ in range(num_drones)]
@@ -207,6 +219,7 @@ def run_pybullet_only_hike(
                 if pred:
                     print("LEAD DRONE DETECTED WHALES!!")
                     drone_models["0"].mode = "whales"
+                    drone_models["0"].calc_search_target_points()
                 else:
                     out[0] = drone_models["0"].search_step(i)
                 
@@ -219,7 +232,6 @@ def run_pybullet_only_hike(
                                         path=f'{sim_dir}/pics{d}_track',
                                         frame_num=int(i / CTRL_EVERY_N_STEPS),
                                         )
-                        
 
                     # lead drone tracks whale
                     if d == 0:
@@ -230,6 +242,10 @@ def run_pybullet_only_hike(
                     else:
                         # follower drone receives command from scout drone
                         out[d] = drone_models[str(d)].receive_command()
+                        # check if all whales are in view for drone
+                        pred = drone_models[str(d)].check_whales(seg, rgb)
+                        if pred:
+                            drone_models[str(d)].mode = "whales"
 
                 # check all other drones are in view of drone
                 if drone_models["0"].all_drones_in_position():
@@ -255,12 +271,14 @@ def run_pybullet_only_hike(
                             drone_models[str(d)].mode = "landing"
                             print(f"Drone {d} is centered on whale: switching to landing mode")
                     # landing mode
-                    else:
+                    elif drone_models[str(d)].mode == "landing":
                         out[d], landed = drone_models[str(d)].land_drone()
                         if landed:
                             print(f"Drone {d} has landed")
                             drone_models[str(d)].mode = "complete"
                             out[d] = [0, 0, 0, 0]
+                    elif drone_models[str(d)].mode == "complete":
+                        out[d] = [0, 0, 0, 0]
             else:
                 raise Exception("Invalid mode")
 
@@ -280,14 +298,15 @@ def run_pybullet_only_hike(
                 y_data[d].append(states[d][1])
                     
             # apply external forces to ball objects to simulate whale movement with random force direction
-            fx = random.uniform(12, 18)
-            fx_sign = random.choice([-1, 1])
-            fy = random.uniform(12, 18)
-            fy_sign = random.choice([-1, 1])
-            B_pos = p.getBasePositionAndOrientation(env.object_ids["B"])[0]
-            G_pos = p.getBasePositionAndOrientation(env.object_ids["G"])[0]
-            p.applyExternalForce(objectUniqueId=env.object_ids["B"], linkIndex=-1, forceObj=[fx_sign * fx, fy_sign * fy, 0], posObj=B_pos, flags=p.WORLD_FRAME)
-            p.applyExternalForce(objectUniqueId=env.object_ids["G"], linkIndex=-1, forceObj=[fx_sign * fx, fy_sign * fy, 0], posObj=G_pos, flags=p.WORLD_FRAME)
+            if MOVE_WHALES and i % (CTRL_EVERY_N_STEPS * 1000) == 0:
+                fx = random.uniform(0.05, 0.1)
+                fx_sign = random.choice([-1, 1])
+                fy = random.uniform(0.05, 0.1)
+                fy_sign = random.choice([-1, 1])
+                for obj in env.object_ids["B"]:
+                    pos, orn = p.getBasePositionAndOrientation(obj)
+                    x, y = pos[0], pos[1]
+                    p.resetBasePositionAndOrientation(obj, [x+fx*fx_sign, y+fy*fy_sign, pos[2]], orn)
 
             # plot path on grid
             if i % (CTRL_EVERY_N_STEPS * 100) == 0:
@@ -299,12 +318,14 @@ def run_pybullet_only_hike(
                     with open(sim_dir + f'/vel_cmd{d}.csv', mode='a') as vel_cmd_file:
                         vel_cmd_writer = csv.writer(vel_cmd_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                         vel_cmd_writer.writerow([i, *out[d]])
-                
-                B_pos = p.getBasePositionAndOrientation(env.object_ids["B"])[0]
-                G_pos = p.getBasePositionAndOrientation(env.object_ids["G"])[0]
-                with open(sim_dir + '/target_pos.csv', mode='a') as f:
-                    target_pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                    target_pos_writer.writerow([i, *B_pos, *G_pos, fx, fy])
+                if MOVE_WHALES:
+                    with open(sim_dir + '/target_pos.csv', mode='a') as f:
+                        target_pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                        positions = []
+                        for obj in env.object_ids["B"]:
+                            B_pos = p.getBasePositionAndOrientation(obj)[0]
+                            positions = positions + list(B_pos)
+                        target_pos_writer.writerow([i, *positions])
                     
             # plot path on grid TODO: update for all drones later
             
@@ -322,15 +343,17 @@ def run_pybullet_only_hike(
                     plt.plot(x, y, label=f"Drone {d} Path")
                 
                 # plot target path
-                for i in range(2):
+                if MOVE_WHALES:
                     data = pd.read_csv(os.path.join(sim_dir, f"target_pos.csv"))
-                    x = data.iloc[:, 1 + 3 * i]
-                    y = data.iloc[:, 2 + 3 * i]
-                    plt.plot(x, y, label=f"Target {i} Path")
-                
-                # Plot the target locations
-                plt.scatter(B_pos[0], B_pos[1], label="Target1", color='blue')
-                plt.scatter(G_pos[0], G_pos[1], label="Target2", color='green')
+                    for i, obj in enumerate(env.object_ids["B"]):
+                        x = data.iloc[:, 1 + 3 * i]
+                        y = data.iloc[:, 2 + 3 * i]
+                        B_pos = p.getBasePositionAndOrientation(obj)[0]
+                        plt.plot(x, y, label=f"Target {i} Path")
+
+                for i, obj in enumerate(env.object_ids["B"]):
+                    B_pos = p.getBasePositionAndOrientation(obj)[0]
+                    plt.scatter(B_pos[0], B_pos[1])
                 
                 # Label, title, legend
                 plt.xlabel("X")
@@ -351,5 +374,6 @@ def run_pybullet_only_hike(
             break
 
     env.close()
+
 
 
