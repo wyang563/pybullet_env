@@ -1,0 +1,21 @@
+# Configuration for evaluating models
+
+output_dir = "results"
+runs_per_model = 10
+n_jobs = 10
+
+record_hzs = [
+    3,
+]
+variable_timesteps = [
+    true,
+]
+
+# list with dims [num_unique_runs, length of sequence]
+num_objects = 5
+objects = []
+use_fixed_locs = true
+fixed_obj_locs = [[4.0, 4.0], [5.3, 5.0], [4.4, 5.0], [5.0, 4.0], [4.5, 4.5]]
+move_whales = false
+use_icp = true
+duration_sec = 15 # not actually being used effectively right now

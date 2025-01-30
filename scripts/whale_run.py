@@ -12,45 +12,22 @@ import tomli
 
 from simulator.simulator_whale import run_pybullet_only_hike
 
-def generate_trajectories(config, num_objects):
-    if config['multi_step_objects']:
-        objects = config['objects']
-        locations_rel = []
-        for targets in objects:
-            locations = []
-            cur_point = (0, 0)
-            cur_direction = 0
-            for target in targets:
-                cur_dist = random.uniform(*config['starting_distance_range']) - 0.2
-                target_loc = (
-                    cur_point[0] + (cur_dist + 0.2) * math.cos(cur_direction),
-                    cur_point[1] + (cur_dist + 0.2) * math.sin(cur_direction)
-                )
-                cur_point = (
-                    cur_point[0] + cur_dist * math.cos(cur_direction),
-                    cur_point[1] + cur_dist * math.sin(cur_direction)
-                )
-                locations.append(target_loc)
-                
-                if target == 'R':
-                    cur_direction += config['multi_step_angle_between']
-                elif target == 'B':
-                    cur_direction -= config['multi_step_angle_between']
-                    
-            locations_rel.append(locations)
-    else:
-        # TODO: Fix with config if need to use single-step eval
-        objects = num_objects * ['B']
-        sign = random.choice([-1, 1])
-        start_x = sign * random.uniform(4, 8)
-        start_y = random.uniform(4, 8)
-        locations_rel = []
-        for _ in range(num_objects):
-            dx = random.choice([-1, 1]) * random.uniform(0.5, 1)
-            dy = random.choice([-1, 1]) * random.uniform(0.5, 1)
-            locations_rel.append((start_x + dx, start_y + dy))
-        locations_rel = [(4, 4), (5.3, 5), (4.4, 5), (5, 4), (4.5, 4.5)]
-
+def generate_trajectories(config):
+    # TODO: Fix with config if need to use single-step eval
+    num_objects = config["num_objects"]
+    objects = num_objects * ['B']
+    if config["use_fixed_locs"]:
+        assert len(config["fixed_obj_locs"]) == num_objects, "Number of fixed locations should match number of objects"
+        return objects, config["fixed_obj_locs"]
+    
+    sign = random.choice([-1, 1])
+    start_x = sign * random.uniform(4, 8)
+    start_y = random.uniform(4, 8)
+    locations_rel = []
+    for _ in range(num_objects):
+        dx = random.choice([-1, 1]) * random.uniform(0.5, 1)
+        dy = random.choice([-1, 1]) * random.uniform(0.5, 1)
+        locations_rel.append((start_x + dx, start_y + dy))
     return objects, locations_rel
 
 def process_videos(output_folders):
@@ -104,35 +81,20 @@ def process_videos(output_folders):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate synthetic trajectories')
-    parser.add_argument('--config', type=str, default='configs/evaluate_policy.toml', help='Path to config file')
+    parser.add_argument('--config', type=str, default='pybullet_env/configs/whale_run.toml', help='Path to config file')
     args = parser.parse_args()
     with open(args.config, "rb") as f:
         config = tomli.load(f)
 
-    # Generate trajectories
-    N = 5 # CONFIG: total number of balls 
-    objects, locations_rel = generate_trajectories(config, num_objects=N)
+    # Generate trajectories/CONFIG INITIALIZATION HERE
+    objects, locations_rel = generate_trajectories(config)
 
     # Run simulations
     run_pybullet_only_hike([objects, locations_rel], 
                            output_folder="whale_results", 
                            duration_sec=config['duration_sec'],
                            record_hz=3,
-                           num_drones=N+1
+                           num_drones=int(config["num_objects"])+1,
+                           move_whales=config['move_whales'],
+                           use_icp=config['use_icp']
                            )
-    
-    # joblib.Parallel(n_jobs=config['n_jobs'])(
-    #     joblib.delayed(run_pybullet_only_hike)(
-    #         d, 
-    #         output_folder=output_folder_path,
-    #         params_path=params_path,
-    #         duration_sec=config['duration_sec'], # TODO: Remove since it's not being used
-    #         record_hz=3
-    #     )
-    #     for d, params_path, checkpoint_path, output_folder_path, record_hz, variable_timestep 
-    #     in tqdm(zip(total_list, concurrent_params_paths, concurrent_checkpoint_paths,
-    #                output_folder_paths, expanded_record_hzs, expanded_variable_timesteps))
-    # )
-
-    # Process and combine videos
-    # process_videos(get_output_folders(get_tag_names(config), config))

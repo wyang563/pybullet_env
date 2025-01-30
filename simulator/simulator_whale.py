@@ -40,7 +40,7 @@ DEFAULT_COLAB = False
 DEFAULT_PARAMS_PATH = None
 DEFAULT_CHECKPOINT_PATH = None
 POINT_CLOUD_REGISTRATION = False
-MOVE_WHALES = False
+DEFAULT_MOVE_WHALES = False
 
 SCOUT_H = 7.0
 H = 5.0
@@ -64,7 +64,9 @@ def run_pybullet_only_hike(
         control_freq_hz=DEFAULT_CONTROL_FREQ_HZ,
         duration_sec=None,
         colab=DEFAULT_COLAB,
-        record_hz = DEFAULT_SAMPLING_FREQ_HQ
+        record_hz = DEFAULT_SAMPLING_FREQ_HQ,
+        move_whales=DEFAULT_MOVE_WHALES,
+        use_icp=False,
 ):
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
@@ -255,32 +257,47 @@ def run_pybullet_only_hike(
 
             # tracking mode
             elif drone_models[str(0)].mode == "tracking":
-                for d in range(num_drones):
-                    rgb, _, seg = env._getDroneImages(d)
-                    if i % (REC_EVERY_N_STEPS * 10) == 0:
-                        env._exportImage(img_type=ImageType.RGB,
-                                        img_input=rgb,
-                                        path=f'{sim_dir}/pics{d}_track',
-                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                        )
-                    if d == 0:
-                        out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
-                    elif drone_models[str(d)].mode == "tracking":
-                        out[d], centered = drone_models[str(d)].track_whale(seg, rgb)
-                        if centered:
-                            drone_models[str(d)].mode = "landing"
-                            print(f"Drone {d} is centered on whale: switching to landing mode")
-                    # landing mode
-                    elif drone_models[str(d)].mode == "landing":
-                        out[d], landed = drone_models[str(d)].land_drone()
-                        if landed:
-                            print(f"Drone {d} has landed")
-                            drone_models[str(d)].mode = "complete"
+                if use_icp:
+                    all_correspondences = drone_models[str(0)].icp_analysis()
+                    assigned_points = set()
+                    for d in range(num_drones):
+                        rgb, _, seg = env._getDroneImages(d)
+                        if i % (REC_EVERY_N_STEPS * 10) == 0:
+                            env._exportImage(img_type=ImageType.RGB,
+                                            img_input=rgb,
+                                            path=f'{sim_dir}/pics{d}_track',
+                                            frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                            )
+                        if d == 0:
+                            out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
+                    
+                else:
+                    for d in range(num_drones):
+                        rgb, _, seg = env._getDroneImages(d)
+                        if i % (REC_EVERY_N_STEPS * 10) == 0:
+                            env._exportImage(img_type=ImageType.RGB,
+                                            img_input=rgb,
+                                            path=f'{sim_dir}/pics{d}_track',
+                                            frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                            )
+                        if d == 0:
+                            out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
+                        elif drone_models[str(d)].mode == "tracking":
+                            out[d], centered = drone_models[str(d)].track_whale(seg, rgb)
+                            if centered:
+                                drone_models[str(d)].mode = "landing"
+                                print(f"Drone {d} is centered on whale: switching to landing mode")
+                        # landing mode
+                        elif drone_models[str(d)].mode == "landing":
+                            out[d], landed = drone_models[str(d)].land_drone()
+                            if landed:
+                                print(f"Drone {d} has landed")
+                                drone_models[str(d)].mode = "complete"
+                                out[d] = [0, 0, 0, 0]
+                        elif drone_models[str(d)].mode == "complete":
                             out[d] = [0, 0, 0, 0]
-                    elif drone_models[str(d)].mode == "complete":
-                        out[d] = [0, 0, 0, 0]
             else:
-                raise Exception("Invalid mode")
+                raise Exception("Invalid drone mode")
 
         if i % CTRL_EVERY_N_STEPS == 0:
             for d in range(num_drones):
@@ -298,7 +315,7 @@ def run_pybullet_only_hike(
                 y_data[d].append(states[d][1])
                     
             # apply external forces to ball objects to simulate whale movement with random force direction
-            if MOVE_WHALES and i % (CTRL_EVERY_N_STEPS * 1000) == 0:
+            if move_whales and i % (CTRL_EVERY_N_STEPS * 1000) == 0:
                 fx = random.uniform(0.05, 0.1)
                 fx_sign = random.choice([-1, 1])
                 fy = random.uniform(0.05, 0.1)
@@ -318,7 +335,7 @@ def run_pybullet_only_hike(
                     with open(sim_dir + f'/vel_cmd{d}.csv', mode='a') as vel_cmd_file:
                         vel_cmd_writer = csv.writer(vel_cmd_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                         vel_cmd_writer.writerow([i, *out[d]])
-                if MOVE_WHALES:
+                if move_whales:
                     with open(sim_dir + '/target_pos.csv', mode='a') as f:
                         target_pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                         positions = []
@@ -343,7 +360,7 @@ def run_pybullet_only_hike(
                     plt.plot(x, y, label=f"Drone {d} Path")
                 
                 # plot target path
-                if MOVE_WHALES:
+                if move_whales:
                     data = pd.read_csv(os.path.join(sim_dir, f"target_pos.csv"))
                     for i, obj in enumerate(env.object_ids["B"]):
                         x = data.iloc[:, 1 + 3 * i]

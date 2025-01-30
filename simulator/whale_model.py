@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 from simulator.simulator_utils import *
 import csv
+from simulator.icp import icp
 
 # IMPORTANT CONSTANTS FOR RECON SEARCH
 SEARCH_SPEED = 0.25
@@ -31,6 +32,7 @@ class WhaleDroneModel:
         self.sim_dir = sim_dir
         self.debug_file = f"{sim_dir}/debug/drone_{self.drone_id}.csv"
         self.timestep = -1
+        self.target_obj_index = -1 # uninitialized at start
 
     def set_other_drones(self, other_drones):
         # map of ids to drone objects 
@@ -236,6 +238,21 @@ class WhaleDroneModel:
             debug_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
             debug_writer.writerow([*debug_strs])
 
+    # plot centers on rgb image and save it 
+    def plot_centers_on_rgb(self, centers, rgb, drone_num):
+        rgb_with_centers = rgb.copy()
+        dot_color = (0, 0, 0)         
+        radius = 5        
+        thickness = -1
+        
+        # Iterate over each center and draw a dot on the image
+        for center in centers:
+            center = tuple(map(int, center))
+            cv2.circle(rgb_with_centers, center, radius, dot_color, thickness)
+        
+        cv2.imwrite(self.sim_dir + f"/center_pics{drone_num}/centers_{self.timestep}.png", rgb_with_centers)
+        return rgb_with_centers
+
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
@@ -347,7 +364,56 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                     return False
         return True
 
-    # send commands to other drones
+    def icp_analysis(self):
+        all_correspondences = []
+        net_corr = [i for i in range(self.num_drones)] # mapping from drone 1 positions to drone x positions aggregatively
+        for d in range(1, self.num_drones):
+            rgb1, _, seg1 = self.env._getDroneImages(d)
+            drone1_height = float(self.other_drones[str(d)].get_drone_state()[2])
+
+            if d + 1 == self.num_drones:
+                rgb2, _, seg2 = self.env._getDroneImages(1)
+                drone2_height = float(self.other_drones[str(1)].get_drone_state()[2])
+
+            else:
+                rgb2, _, seg2 = self.env._getDroneImages(d + 1)
+                drone2_height = float(self.other_drones[str(d + 1)].get_drone_state()[2])
+
+            # get centers of whales
+            centers1 = self.segment_image(seg1)
+            centers2 = self.segment_image(seg2)
+
+            whale_centers1 = []
+            whale_centers2 = []
+
+            for x, y in centers1:
+                if self.check_color(rgb1[int(x), int(y)]):
+                    whale_centers1.append([y, x])
+            for x, y in centers2:
+                if self.check_color(rgb2[int(x), int(y)]):
+                    whale_centers2.append([y, x])
+
+            # plot centers on image DEBUGGING
+            self.plot_centers_on_rgb(whale_centers1, rgb1, d)
+            self.plot_centers_on_rgb(whale_centers2, rgb2, d + 1)
+
+            assert len(whale_centers1) == len(whale_centers2), f"Number of whales detected in images do not match centers1: {len(whale_centers1)}, centers2: {len(whale_centers2)}"
+            
+            # plot centers on image
+            
+            _, corr = icp(np.array(whale_centers1), np.array(whale_centers2), drone1_height, drone2_height)
+
+            all_correspondences.append(corr)
+            
+            # calculate net correspondence
+            new_correspondence = [0 for _ in range(self.num_drones)]
+            for i in range(len(corr)):
+                new_correspondence[i] = net_corr[corr[i]]
+            net_corr = new_correspondence.copy()
+        
+        # assert the mapping is the identity at the end
+        assert net_corr == [i for i in range(self.num_drones)], "Final correspondence mapping is not the identity"
+        return all_correspondences
 
     # send command to specific drone
     def send_command_drone(self, command, text, target_drone):
