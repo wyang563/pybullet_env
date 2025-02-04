@@ -194,6 +194,9 @@ def run_pybullet_only_hike(
     value = np.array([0, 0, 0, 0, 0, 0])
     value = value[None,:]
 
+    prepare_switch_tracking = False # flag to switch to tracking mode
+    switch_timestep = -1 # init for switch timestep when preparing to switch to tracking mode
+
     for i in trange(0, int(STEPS), AGGR_PHY_STEPS):
         # State of drone at a time step
         # np.hstack([self.pos[nth_drone, :], self.quat[nth_drone, :], self.rpy[nth_drone, :], self.vel[nth_drone, :], self.ang_v[nth_drone, :], self.last_clipped_action[nth_drone, :]])
@@ -250,8 +253,12 @@ def run_pybullet_only_hike(
                             drone_models[str(d)].mode = "whales"
 
                 # check all other drones are in view of drone
-                if drone_models["0"].all_drones_in_position():
-                    print("ALL DRONES IN POSITION: SWITCHING TO TRACKING MODE")
+                if not prepare_switch_tracking and drone_models["0"].all_drones_in_position():
+                    print("ALL DRONES IN POSITION: SWITCHING TO TRACKING MODE IN 300 TIME STEPS")
+                    prepare_switch_tracking = True
+                    switch_timestep = i + 1000
+                    
+                if i >= switch_timestep and prepare_switch_tracking:
                     for d in range(num_drones):
                         drone_models[str(d)].mode = "tracking"
 

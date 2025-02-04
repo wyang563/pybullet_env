@@ -75,12 +75,16 @@ class WhaleDroneModel:
             return True
         return False
 
+
     def segment_image(self, seg):
         '''
-        return global coordinate of centers of clusters in segmented image
+        Return global coordinate of centers of clusters in segmented image
+        and draw oriented bounding boxes around each segmented object.
         '''
         num_labels, labels_im = cv2.connectedComponents(seg.astype(np.uint8))
         centers = []
+        boxes = []
+
         for label in range(1, num_labels):  # Skip label 0 (background)
             # Find pixels belonging to the current label
             object_pixels = np.argwhere(labels_im == label)
@@ -89,10 +93,12 @@ class WhaleDroneModel:
             center_x, center_y = object_pixels.mean(axis=0)
             centers.append((center_x, center_y))
 
-        num_labels, labels_im = cv2.connectedComponents(seg.astype(np.uint8))
+            rect = cv2.minAreaRect(object_pixels[:, ::-1])  
+            box = cv2.boxPoints(rect) 
+            box = np.int0(box)  # Convert to integer coordinates
+            boxes.append(box)
 
         # Generate a color mapping for each component
-        # We'll map each label to a hue value, then convert HSV to BGR
         if np.max(labels_im) > 0:
             label_hue = np.uint8(179 * labels_im / np.max(labels_im))  
             blank_ch = 255 * np.ones_like(label_hue)
@@ -104,14 +110,19 @@ class WhaleDroneModel:
 
             # Display the image
             plt.imshow(cv2.cvtColor(colored_img, cv2.COLOR_BGR2RGB))
-            plt.title('Connected Components')
+            plt.title('Connected Components with Oriented Bounding Boxes')
             plt.axis('off')
 
-            # Save the colored connected components image
+            # Save the colored connected components image with bounding boxes
             if self.timestep % 400 == 0:
                 cv2.imwrite(self.sim_dir + f"/segment_pics{self.drone_id}/segments_drone_{self.timestep}.png", colored_img)
+            
+            for box in boxes:
+                cv2.drawContours(colored_img, [box], 0, (0, 255, 0), 2)  # Draw the rectangle in green
 
-        return centers     
+            if self.timestep % 400 == 0:
+                cv2.imwrite(self.sim_dir + f"/center_pics{self.drone_id}/segments_drone_{self.timestep}.png", colored_img) 
+        return centers, boxes
 
     def check_whales(self, seg, rgb):
         '''
@@ -120,7 +131,7 @@ class WhaleDroneModel:
         '''
 
         # find center points of segmented image
-        centers = self.segment_image(seg)
+        centers, _ = self.segment_image(seg)
         count = 0
         for x, y in centers:
             count += int(self.check_color(rgb[int(x), int(y)]))
@@ -137,12 +148,25 @@ class WhaleDroneModel:
         self.write_debug_file([x, y, dx, dy])
         # print("target vector: ", [dx * incr_constant, dy * incr_constant])
         return [dy * incr_constant, dx * incr_constant, 0, 0]
-    
+
+    def get_whale_center_list(self, seg, rgb):
+        '''
+        returns pixel coordinate list of whale centers along with their corresponding bounding boxes
+        '''
+        centers, boxes = self.segment_image(seg)
+        whale_centers = []
+        whale_boxes = []
+        for i, (x, y) in enumerate(centers):
+            if self.check_color(rgb[int(x), int(y)]):
+                whale_centers.append((x, y))
+                whale_boxes.append(boxes[i])
+        return whale_centers, whale_boxes
+
     def get_whales_center(self, seg, rgb):
         '''
         get whale center and calculate velocity to rough area where whale center is
         '''
-        centers = self.segment_image(seg)
+        centers, _ = self.segment_image(seg)
         avg_x, avg_y = 0, 0
         count = 0
         for x, y in centers:
@@ -168,7 +192,7 @@ class WhaleDroneModel:
 
     # tracking stage functions
     def track_whale(self, seg, rgb):
-        centers = self.segment_image(seg)
+        centers, _ = self.segment_image(seg)
         whale_centers = []
         for x, y in centers:
             if self.check_color(rgb[int(x), int(y)]):
@@ -242,7 +266,7 @@ class WhaleDroneModel:
     def plot_centers_on_rgb(self, centers, rgb, drone_num):
         rgb_with_centers = rgb.copy()
         dot_color = (0, 0, 0)         
-        radius = 5        
+        radius = 2        
         thickness = -1
         
         # Iterate over each center and draw a dot on the image
@@ -252,7 +276,6 @@ class WhaleDroneModel:
         
         cv2.imwrite(self.sim_dir + f"/center_pics{drone_num}/centers_{self.timestep}.png", rgb_with_centers)
         return rgb_with_centers
-
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
@@ -380,28 +403,16 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 drone2_height = float(self.other_drones[str(d + 1)].get_drone_state()[2])
 
             # get centers of whales
-            centers1 = self.segment_image(seg1)
-            centers2 = self.segment_image(seg2)
-
-            whale_centers1 = []
-            whale_centers2 = []
-
-            for x, y in centers1:
-                if self.check_color(rgb1[int(x), int(y)]):
-                    whale_centers1.append([y, x])
-            for x, y in centers2:
-                if self.check_color(rgb2[int(x), int(y)]):
-                    whale_centers2.append([y, x])
-
-            # plot centers on image DEBUGGING
-            self.plot_centers_on_rgb(whale_centers1, rgb1, d)
-            self.plot_centers_on_rgb(whale_centers2, rgb2, d + 1)
+            whale_centers1, whale_boxes1 = self.get_whale_center_list(seg1, rgb1)
+            whale_centers2, whale_boxes2 = self.get_whale_center_list(seg2, rgb2)
+            print(whale_boxes1)
+            print(whale_boxes2)
 
             assert len(whale_centers1) == len(whale_centers2), f"Number of whales detected in images do not match centers1: {len(whale_centers1)}, centers2: {len(whale_centers2)}"
             
             # plot centers on image
             
-            _, corr = icp(np.array(whale_centers1), np.array(whale_centers2), drone1_height, drone2_height)
+            _, corr = icp(np.array(whale_centers1), np.array(whale_centers2))
 
             all_correspondences.append(corr)
             
