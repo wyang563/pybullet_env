@@ -1,5 +1,4 @@
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm
 
@@ -40,7 +39,7 @@ def calc_pair_box_distance(box1, box2):
     given two rectangular bounding boxes, calculate the minimum bijective pairwise 
     distance between vertices of the two boxes.
     '''
-    assert box1.shape == (4, 2) and box2.shape == (4, 2), "expected box inputs to have shape 4x2"
+    assert box1.shape == (4, 2) and box2.shape == (4, 2), "expected box inputs to have shape 4x2, instead found shapes {} and {}".format(box1.shape, box2.shape)
     pairwise_distances = np.zeros((4, 4))
     for i in range(4):
         for j in range(4):
@@ -63,16 +62,6 @@ def calc_all_box_distance(boxes1, boxes2):
         for i, ind in enumerate(pairwise_corr_indices[row_ind, col_ind]):
             flat_corr_indices[row_ind * 4 + i] = 4 * col_ind + ind
     return box_assign_dist, flat_corr_indices.ravel(), box_corr_col_ind
-
-def nearest_neighbor(src, dst):
-    '''
-    old version of ICP nearest neighbor search (not used anymore)
-    '''
-    assert src.shape == dst.shape  
-    neigh = NearestNeighbors(n_neighbors=1)
-    neigh.fit(dst)
-    distances, indices = neigh.kneighbors(src, return_distance=True)
-    return distances.ravel(), indices.ravel()
 
 def icp(A, B, max_iters=20, tolerance=0.0001):
     assert A.shape == B.shape, "A and B must have the same shape"
@@ -111,10 +100,6 @@ def icp(A, B, max_iters=20, tolerance=0.0001):
 
     # Compute the final transformation
     T, _, _ = best_fit_transform(original_A, src[:m, :].T)
-
-    # Adjust the transformation matrix to account for the original scaling
-
-    # return T, distances, i, R, t, correspondence_indices
     return T, correspondence_indices
 
 if __name__ == "__main__":

@@ -6,11 +6,13 @@ import numpy as np
 from simulator.simulator_utils import *
 import csv
 from simulator.icp import icp
+from scipy.optimize import linear_sum_assignment
+from numpy.linalg import norm
 
 # IMPORTANT CONSTANTS FOR RECON SEARCH
 SEARCH_SPEED = 0.25
 DEFAULT_SPEED = 0.12
-WHALE_TRACK_SPEED = 0.05
+WHALE_TRACK_SPEED = 0.10
 VERT_TIME = 2200
 TURN_TIME = 4800
 LANDING_SPEED = -0.35
@@ -33,6 +35,7 @@ class WhaleDroneModel:
         self.debug_file = f"{sim_dir}/debug/drone_{self.drone_id}.csv"
         self.timestep = -1
         self.target_obj_index = -1 # uninitialized at start
+        self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position
 
     def set_other_drones(self, other_drones):
         # map of ids to drone objects 
@@ -129,7 +132,6 @@ class WhaleDroneModel:
         Given a drone shot image at a given time step, segment the image and find global positions of all objects in
         image. Calculates velocity drone needs to fly to reach object. 
         '''
-
         # find center points of segmented image
         centers, _ = self.segment_image(seg)
         count = 0
@@ -146,7 +148,6 @@ class WhaleDroneModel:
         dx, dy = -x + m/2, y - n/2
         incr_constant = np.sqrt(WHALE_TRACK_SPEED ** 2 / (dx ** 2 + dy ** 2))
         self.write_debug_file([x, y, dx, dy])
-        # print("target vector: ", [dx * incr_constant, dy * incr_constant])
         return [dy * incr_constant, dx * incr_constant, 0, 0]
 
     def get_whale_center_list(self, seg, rgb):
@@ -175,11 +176,12 @@ class WhaleDroneModel:
                 avg_y += y
                 count += 1
         if count == 0:
-            return [0, 0, 0, 0]
+            return [0, 0, 0, 0], float('inf')
         else:
             target_point = [avg_x / count, avg_y / count]
-            return self.pixel_to_world_velocity(target_point, seg.shape)
-    
+            dist_to_target = np.linalg.norm(np.array([avg_x / count, avg_y / count]) - np.array([seg.shape[0] // 2, seg.shape[1] // 2]))
+            return self.pixel_to_world_velocity(target_point, seg.shape), dist_to_target   
+
     # calculate distances to other drones, returns yes if dist is too close to another drone
     def check_drone_proximity(self):
         for drone in self.other_drones:
@@ -191,6 +193,11 @@ class WhaleDroneModel:
         return False
 
     # tracking stage functions
+
+    def check_centered(self, target_center, img_shape):
+        return (target_center[0] - img_shape[0] // 2)**2 + (target_center[1] - img_shape[1] // 2)**2 < 10
+
+    # track whale and return velocity to reach whale (based off order of whales along the x-axis)
     def track_whale(self, seg, rgb):
         centers, _ = self.segment_image(seg)
         whale_centers = []
@@ -203,12 +210,24 @@ class WhaleDroneModel:
             target_center = whale_centers[int(self.drone_id) - 1]
             # check if we're centered on whale
             target_center = [target_center[1], target_center[0]]
-            if (target_center[0] - seg.shape[0] // 2)**2 + (target_center[1] - seg.shape[1] // 2)**2 < 10:
+            if self.check_centered(target_center, seg.shape):
                 return [0, 0, 0, 0], True
             return self.pixel_to_world_velocity(target_center, seg.shape), False
         except:
             print("target center error")
             return [0, 0, 0, 0], False
+
+    def track_whale_prev_center(self, seg, rgb):
+        whale_centers, _ = self.get_whale_center_list(seg, rgb)
+        # get point closest to prev target point
+        min_dist = float('inf')
+        target_center = whale_centers[0]
+        for center in whale_centers:
+            dist = np.linalg.norm(np.array(center) - np.array(self.prev_target_pixel_pos))
+            if dist < min_dist:
+                min_dist = dist
+                target_center = center
+        return self.pixel_to_world_velocity(target_center, seg.shape), target_center
 
     # landing logic
     def land_drone(self):
@@ -368,8 +387,10 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             self.search_target_points.append((dx, dy))
             dx += search_width / (self.num_drones - 2)
     
-    def all_drones_in_position(self):
+    def all_drones_in_position(self, leader_vel):
         search_drone_pos = self.get_drone_state()[:2]
+        if np.linalg.norm(leader_vel) > 2:
+            return False
         for drone in self.other_drones:
             if drone != self.drone_id:
                 drone_pos = self.other_drones[drone].get_drone_state()[:2]
@@ -379,52 +400,82 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 if self.other_drones[drone].mode != "whales":
                     return False
         return True
-    
+
+    def all_drones_centered(self):
+        for drone in self.other_drones:
+            if drone != self.drone_id:
+                if self.other_drones[drone].mode not in ["centered", "landing", "complete"]:
+                    return False
+        return True
+
     def all_drones_landed(self):
         for drone in self.other_drones:
             if drone != self.drone_id:
                 if self.other_drones[drone].mode != "complete":
                     return False
-        return True
+        return True    
 
     def icp_analysis(self):
-        all_correspondences = []
-        net_corr = [i for i in range(self.num_drones)] # mapping from drone 1 positions to drone x positions aggregatively
+        '''
+        Perform ICP analysis on drone images to check if drones agree on whale positions,
+        then outputs velocity commands for each drone 
+        '''
+        all_whale_boxes = []
+        net_corr = [i for i in range(self.num_drones - 1)] # mapping from drone 1 positions to drone x positions aggregatively
         for d in range(1, self.num_drones):
             rgb1, _, seg1 = self.env._getDroneImages(d)
-            drone1_height = float(self.other_drones[str(d)].get_drone_state()[2])
 
             if d + 1 == self.num_drones:
                 rgb2, _, seg2 = self.env._getDroneImages(1)
-                drone2_height = float(self.other_drones[str(1)].get_drone_state()[2])
-
             else:
                 rgb2, _, seg2 = self.env._getDroneImages(d + 1)
-                drone2_height = float(self.other_drones[str(d + 1)].get_drone_state()[2])
 
             # get centers of whales
             whale_centers1, whale_boxes1 = self.get_whale_center_list(seg1, rgb1)
-            whale_centers2, whale_boxes2 = self.get_whale_center_list(seg2, rgb2)
-            print(whale_boxes1)
-            print(whale_boxes2)
+            whale_centers2, whale_boxes2 = self.get_whale_center_list(seg2, rgb2)  
 
-            assert len(whale_centers1) == len(whale_centers2), f"Number of whales detected in images do not match centers1: {len(whale_centers1)}, centers2: {len(whale_centers2)}"
+            if len(whale_centers1) != len(whale_centers2):
+                print(f"Different number of whales detected at index {d}, centers 1: {whale_centers1}, centers 2: {whale_centers2}")
+                return False, None, None
             
-            # plot centers on image
-            
-            _, corr = icp(np.array(whale_centers1), np.array(whale_centers2))
-
-            all_correspondences.append(corr)
-            
+            _, corr = icp(np.array(whale_boxes1), np.array(whale_boxes2))
             # calculate net correspondence
-            new_correspondence = [0 for _ in range(self.num_drones)]
+            new_correspondence = [0 for _ in range(self.num_drones - 1)]
             for i in range(len(corr)):
                 new_correspondence[i] = net_corr[corr[i]]
             net_corr = new_correspondence.copy()
+
+            # append all whale boxes to list with boxes repermuted according to 1st image label number
+            all_whale_boxes.append([whale_boxes1[p] for p in net_corr])
+            
+        # check the mapping is the identity at the end
+        if list(net_corr) != [i for i in range(self.num_drones - 1)]:
+            print("net correlation was not the identity mapping: ", net_corr)
+            return False, None, None
         
-        # assert the mapping is the identity at the end
-        assert net_corr == [i for i in range(self.num_drones)], "Final correspondence mapping is not the identity"
-        return all_correspondences
+        # nearest neighbor for whichever point is closest to a given whale
+        drone_to_whale_dists = np.zeros((self.num_drones - 1, len(all_whale_boxes)))  
+        center_pixel = np.array([rgb1.shape[0] // 2, rgb1.shape[1] // 2])
+        for i in range(self.num_drones - 1):
+            for j in range(len(all_whale_boxes[i])):
+                whale_center = np.mean(all_whale_boxes[i][j], axis=0)
+                drone_to_whale_dists[i][j] = norm(whale_center - center_pixel)
+        _, drone_col_assign = linear_sum_assignment(drone_to_whale_dists)
+        velocity_vecs = []
+        target_pixels = []
+        for i in range(self.num_drones - 1):
+            target_pixel = np.mean(all_whale_boxes[i][drone_col_assign[i]], axis=0)
+            target_pixel = [target_pixel[1], target_pixel[0]]
+            target_pixels.append(target_pixel)
+            velocity_vecs.append(self.pixel_to_world_velocity(target_pixel, rgb1.shape)) # for some reason target pixel index values need to be swapped
+
+        # draw target pixels to debug image
+        for d in range(1, self.num_drones):
+            rgb, _, _ = self.env._getDroneImages(d)
+            self.other_drones[str(d)].prev_target_pixel_pos = target_pixels[d - 1]
+            cv2.circle(rgb, (int(target_pixels[d - 1][0]), int(target_pixels[d - 1][1])), 2, (0, 0, 0), -1)
+            cv2.imwrite(self.sim_dir + f"/center_pics{d}/icp_targets/target_pixels_{self.timestep}.png", rgb) 
+        return True, velocity_vecs, target_pixels
 
     # send command to specific drone
     def send_command_drone(self, command, text, target_drone):
@@ -437,7 +488,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 self.other_drones[drone].in_command = f"{command}|{text}"
 
     # for lead drone to send fly commands to all drones during whale tracking phase
-    def track_stage_send_command(self, cur_pos):
+    def whale_stage_send_command(self, cur_pos):
         x, y = cur_pos[0], cur_pos[1]
         for i in range(1, self.num_drones):
             dx, dy = self.search_target_points[i - 1]

@@ -9,7 +9,6 @@ import joblib
 import subprocess
 from tqdm import tqdm
 import tomli
-
 from simulator.simulator_whale import run_pybullet_only_hike
 
 def generate_trajectories(config):

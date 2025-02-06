@@ -119,7 +119,6 @@ def run_pybullet_only_hike(
     AGGR_PHY_STEPS = int(simulation_freq_hz / control_freq_hz) if aggregate else 1
 
     NUM_WP = control_freq_hz * duration_sec
-
     #### Create the environment with or without video capture ##
     if vision:
         env = VisionAviary(drone_model=drone,
@@ -196,6 +195,7 @@ def run_pybullet_only_hike(
 
     prepare_switch_tracking = False # flag to switch to tracking mode
     switch_timestep = -1 # init for switch timestep when preparing to switch to tracking mode
+    done_icp = False
 
     for i in trange(0, int(STEPS), AGGR_PHY_STEPS):
         # State of drone at a time step
