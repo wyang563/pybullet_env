@@ -11,7 +11,7 @@ from collections import defaultdict
 # If you don't have these urdfs in the pybullet_data package, 
 # run gym-pybullet-drones/gym_pybullet_drones/assets/copy_assets_to_pybullet_data_folder.py
 
-FILE_PREFIX = "/home/gridsan/wyang/.conda/envs/flex/lib/python3.9/site-packages/pybullet_data/"
+FILE_PREFIX = "/home/gridsan/wyang/.conda/envs/flex/lib/python3.9/site-packages/pybullet_data/" # REPLACE THIS WITH WHEREEVER YOUR DATA IS
 
 filename_map = {
     'R': f"{FILE_PREFIX}/sphere2red.urdf",
@@ -132,7 +132,6 @@ class CtrlAviary(BaseAviary):
                         globalScaling=0.3
                         ))
                 else:
-                    # ball_size = random.uniform(0.35, 0.6)
                     self.object_ids[color].append(p.loadURDF(filename_map[color],
                             [*location, 0.1 + 0.5],
                             p.getQuaternionFromEuler([0,0,0]),
@@ -140,9 +139,9 @@ class CtrlAviary(BaseAviary):
                             globalScaling=0.4,
                             ))
             
-        p.loadURDF(FILE_PREFIX + "samurai.urdf",
-            physicsClientId=self.CLIENT
-        )
+        # p.loadURDF(FILE_PREFIX + "samurai.urdf",
+        #     physicsClientId=self.CLIENT
+        # )
 
     def _actionSpace(self):
         """Returns the action space of the environment.

@@ -10,6 +10,38 @@ import subprocess
 from tqdm import tqdm
 import tomli
 from simulator.simulator_whale import run_pybullet_only_hike
+import math
+
+def generate_random_points(n,
+                           min_range=4.0,
+                           max_range=10.0,
+                           min_dist=0.75,
+                           max_dist=1.5,
+                           max_attempts=10000):
+
+    points = []
+    while len(points) < n:
+        found_spot = False
+        for _ in range(max_attempts):
+            # Random candidate in bounding box
+            x = random.uniform(min_range, max_range)
+            y = random.uniform(min_range, max_range)
+
+            # Check distance constraints relative to existing points
+            if all(min_dist <= math.dist((x, y), p) <= max_dist for p in points):
+                points.append((x, y))
+                found_spot = True
+                break  # proceed to place the next point
+        
+        if not found_spot:
+            # If we cannot find a valid point after many tries, stop and inform the user
+            raise ValueError(
+                f"Could not place point #{len(points)+1} "
+                f"within {max_attempts} attempts. "
+                "Try decreasing n, lowering min_dist, or increasing max_dist."
+            )
+
+    return points
 
 def generate_trajectories(config):
     # TODO: Fix with config if need to use single-step eval
@@ -18,15 +50,7 @@ def generate_trajectories(config):
     if config["use_fixed_locs"]:
         assert len(config["fixed_obj_locs"]) == num_objects, "Number of fixed locations should match number of objects"
         return objects, config["fixed_obj_locs"]
-    
-    sign = random.choice([-1, 1])
-    start_x = sign * random.uniform(4, 8)
-    start_y = random.uniform(4, 8)
-    locations_rel = []
-    for _ in range(num_objects):
-        dx = random.choice([-1, 1]) * random.uniform(0.5, 1)
-        dy = random.choice([-1, 1]) * random.uniform(0.5, 1)
-        locations_rel.append((start_x + dx, start_y + dy))
+    locations_rel = generate_random_points(num_objects) 
     return objects, locations_rel
 
 def process_videos(output_folders):

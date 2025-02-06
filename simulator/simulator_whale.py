@@ -194,7 +194,7 @@ def run_pybullet_only_hike(
     value = value[None,:]
 
     prepare_switch_tracking = False # flag to switch to tracking mode
-    switch_timestep = -1 # init for switch timestep when preparing to switch to tracking mode
+    switch_timestep = None # init for switch timestep when preparing to switch to tracking mode
     done_icp = False
 
     for i in trange(0, int(STEPS), AGGR_PHY_STEPS):
@@ -240,9 +240,9 @@ def run_pybullet_only_hike(
 
                     # lead drone tracks whale
                     if d == 0:
-                        out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
+                        out[d], dist_to_target = drone_models[str(d)].get_whales_center(seg, rgb)
                         cur_pos = drone_models[str(d)].get_drone_state()[:2]
-                        drone_models[str(d)].track_stage_send_command(cur_pos)
+                        drone_models[str(d)].whale_stage_send_command(cur_pos)
 
                     else:
                         # follower drone receives command from scout drone
@@ -253,47 +253,58 @@ def run_pybullet_only_hike(
                             drone_models[str(d)].mode = "whales"
 
                 # check all other drones are in view of drone
-                if not prepare_switch_tracking and drone_models["0"].all_drones_in_position():
+                if not prepare_switch_tracking and drone_models["0"].all_drones_in_position(dist_to_target):
                     print("ALL DRONES IN POSITION: SWITCHING TO TRACKING MODE IN 300 TIME STEPS")
                     prepare_switch_tracking = True
-                    switch_timestep = i + 1000
+                    switch_timestep = i + 300
                     
-                if i >= switch_timestep and prepare_switch_tracking:
+                if switch_timestep and i >= switch_timestep and prepare_switch_tracking:
                     for d in range(num_drones):
                         drone_models[str(d)].mode = "tracking"
 
             # tracking mode
             elif drone_models[str(0)].mode == "tracking":
-                if use_icp:
-                    all_correspondences = drone_models[str(0)].icp_analysis()
-                    assigned_points = set()
-                    for d in range(num_drones):
-                        rgb, _, seg = env._getDroneImages(d)
-                        if i % (REC_EVERY_N_STEPS * 10) == 0:
-                            env._exportImage(img_type=ImageType.RGB,
-                                            img_input=rgb,
-                                            path=f'{sim_dir}/pics{d}_track',
-                                            frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                            )
+                # get drone images
+                for d in range(num_drones):
+                    rgb, _, seg = env._getDroneImages(d)
+                    if i % (REC_EVERY_N_STEPS * 10) == 0:
+                        env._exportImage(img_type=ImageType.RGB,
+                                        img_input=rgb,
+                                        path=f'{sim_dir}/pics{d}_track',
+                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                        )
+
+                    if d == 0 and use_icp and not done_icp:
+                        success, vecs, _ = drone_models[str(0)].icp_analysis()
+                        if not success:
+                            print("ICP failed: switching to whales mode")
+                            for d in range(num_drones):
+                                drone_models[str(d)].mode = "whales"
+
+                        for d in range(num_drones):
+                            if d == 0:
+                                out[d], _ = drone_models[str(d)].get_whales_center(seg, rgb)
+                            else:
+                                out[d] = vecs[d - 1]
+                    else:
                         if d == 0:
-                            out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
-                    
-                else:
-                    for d in range(num_drones):
-                        rgb, _, seg = env._getDroneImages(d)
-                        if i % (REC_EVERY_N_STEPS * 10) == 0:
-                            env._exportImage(img_type=ImageType.RGB,
-                                            img_input=rgb,
-                                            path=f'{sim_dir}/pics{d}_track',
-                                            frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                            )
-                        if d == 0:
-                            out[d] = drone_models[str(d)].get_whales_center(seg, rgb)
-                        elif drone_models[str(d)].mode == "tracking":
+                            out[d], _ = drone_models[str(d)].get_whales_center(seg, rgb)
+                            if drone_models[str(d)].all_drones_centered():
+                                for d in range(1, num_drones):
+                                    drone_models[str(d)].mode = "landing"
+
+                        elif drone_models[str(d)].mode in ["tracking", "centered"] and use_icp and done_icp:
+                            out[d] = drone_models[str(d)].track_whale_prev_center(seg, rgb) 
+                            if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(drone_models[str(d)].prev_target_pixel_pos, seg.shape):
+                               drone_models[str(d)].mode = "centered"
+                               print(f"Drone {d} is centered on whale: switching to centered mode")
+                                
+                        elif drone_models[str(d)].mode == ["tracking", "centered"] and not use_icp:
                             out[d], centered = drone_models[str(d)].track_whale(seg, rgb)
-                            if centered:
-                                drone_models[str(d)].mode = "landing"
-                                print(f"Drone {d} is centered on whale: switching to landing mode")
+                            if drone_models[str(d)].mode != "centered" and centered:
+                                drone_models[str(d)].mode = "centered"
+                                print(f"Drone {d} is centered on whale: switching to centered mode")
+
                         # landing mode
                         elif drone_models[str(d)].mode == "landing":
                             out[d], landed = drone_models[str(d)].land_drone()
@@ -303,13 +314,13 @@ def run_pybullet_only_hike(
                                 out[d] = [0, 0, 0, 0]
                         elif drone_models[str(d)].mode == "complete":
                             out[d] = [0, 0, 0, 0]
+                    done_icp = True
             else:
                 raise Exception("Invalid drone mode")
 
         if i % CTRL_EVERY_N_STEPS == 0:
             for d in range(num_drones):
-                action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP,
-                                            cur_pos=states[d][0:3],
+                action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP, cur_pos=states[d][0:3],
                                             cur_quat=states[d][3:7],
                                             cur_vel=states[d][10:13],
                                             cur_ang_vel=states[d][13:16],
@@ -351,8 +362,7 @@ def run_pybullet_only_hike(
                             positions = positions + list(B_pos)
                         target_pos_writer.writerow([i, *positions])
                     
-            # plot path on grid TODO: update for all drones later
-            
+            # plot path on grid 
             if i % (CTRL_EVERY_N_STEPS * 500) == 0:
                 # Create one figure
                 plt.figure(figsize=(8, 6))

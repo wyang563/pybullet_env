@@ -227,7 +227,8 @@ class WhaleDroneModel:
             if dist < min_dist:
                 min_dist = dist
                 target_center = center
-        return self.pixel_to_world_velocity(target_center, seg.shape), target_center
+        self.prev_target_pixel_pos = target_center
+        return self.pixel_to_world_velocity(target_center, seg.shape) 
 
     # landing logic
     def land_drone(self):
@@ -387,9 +388,9 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             self.search_target_points.append((dx, dy))
             dx += search_width / (self.num_drones - 2)
     
-    def all_drones_in_position(self, leader_vel):
+    def all_drones_in_position(self, dist_to_target):
         search_drone_pos = self.get_drone_state()[:2]
-        if np.linalg.norm(leader_vel) > 2:
+        if np.linalg.norm(dist_to_target) > 2:
             return False
         for drone in self.other_drones:
             if drone != self.drone_id:
@@ -473,7 +474,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         for d in range(1, self.num_drones):
             rgb, _, _ = self.env._getDroneImages(d)
             self.other_drones[str(d)].prev_target_pixel_pos = target_pixels[d - 1]
-            cv2.circle(rgb, (int(target_pixels[d - 1][0]), int(target_pixels[d - 1][1])), 2, (0, 0, 0), -1)
+            cv2.circle(rgb, (int(target_pixels[d - 1][1]), int(target_pixels[d - 1][0])), 2, (0, 0, 0), -1)
             cv2.imwrite(self.sim_dir + f"/center_pics{d}/icp_targets/target_pixels_{self.timestep}.png", rgb) 
         return True, velocity_vecs, target_pixels
 
