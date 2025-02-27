@@ -13,9 +13,11 @@ variable_timesteps = [
 
 # list with dims [num_unique_runs, length of sequence]
 num_objects = 5
+object_type = "P_B"
 objects = []
 use_fixed_locs = false 
 fixed_obj_locs = [[1.0, 2.0], [2.6, 2.5], [2.2, 2.5], [2.5, 2.0], [2.25, 2.25]]
 move_whales = false
-use_icp = true 
+goal_assignment = "gnn"
+formation_type = "polygon" # either polygon or line (line by default)
 duration_sec = 15 # not actually being used effectively right now

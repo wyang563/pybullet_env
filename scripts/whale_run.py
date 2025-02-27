@@ -16,8 +16,8 @@ def generate_random_points(n,
                            min_range=4.0,
                            max_range=10.0,
                            min_dist=0.75,
-                           max_dist=1.5,
-                           max_attempts=10000):
+                           max_dist=2,
+                           max_attempts=50000):
 
     points = []
     while len(points) < n:
@@ -44,9 +44,8 @@ def generate_random_points(n,
     return points
 
 def generate_trajectories(config):
-    # TODO: Fix with config if need to use single-step eval
     num_objects = config["num_objects"]
-    objects = num_objects * ['B']
+    objects = num_objects * [config["object_type"]]
     if config["use_fixed_locs"]:
         assert len(config["fixed_obj_locs"]) == num_objects, "Number of fixed locations should match number of objects"
         return objects, config["fixed_obj_locs"]
@@ -112,6 +111,7 @@ if __name__ == "__main__":
     # Generate trajectories/CONFIG INITIALIZATION HERE
     objects, locations_rel = generate_trajectories(config)
 
+    formation_type = config["formation_type"]
     # Run simulations
     run_pybullet_only_hike([objects, locations_rel], 
                            output_folder="whale_results", 
@@ -119,5 +119,7 @@ if __name__ == "__main__":
                            record_hz=3,
                            num_drones=int(config["num_objects"])+1,
                            move_whales=config['move_whales'],
-                           use_icp=config['use_icp']
+                           goal_assignment=config['goal_assignment'],
+                           drone_formation_type=formation_type,
+                           target_obj=config['object_type'],
                            )

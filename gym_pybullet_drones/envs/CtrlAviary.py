@@ -18,6 +18,7 @@ filename_map = {
     'B': f"{FILE_PREFIX}/sphere2blue.urdf",
     'G': f"{FILE_PREFIX}/sphere2green.urdf",
     'Y': f"{FILE_PREFIX}/sphere2yellow.urdf",
+    'P_B': f"{FILE_PREFIX}/pyramid_blue.urdf",
     'cube' : f"{FILE_PREFIX}/cube.urdf",
 }
 
@@ -119,11 +120,10 @@ class CtrlAviary(BaseAviary):
         if self.CUSTOM_OBJECT_LOCATION is None:
             return
         # if self.CUSTOM_OBJECT_LOCATION is a list of tuples:
-        elif type(self.CUSTOM_OBJECT_LOCATION) is dict and "colors" in self.CUSTOM_OBJECT_LOCATION.keys() and "locations" in self.CUSTOM_OBJECT_LOCATION.keys():
-            for color, location in zip(self.CUSTOM_OBJECT_LOCATION["colors"], self.CUSTOM_OBJECT_LOCATION["locations"]):
+        elif type(self.CUSTOM_OBJECT_LOCATION) is dict and "colors" in self.CUSTOM_OBJECT_LOCATION.keys() and "locations" in self.CUSTOM_OBJECT_LOCATION.keys() and "angles" in self.CUSTOM_OBJECT_LOCATION.keys():
+            for color, location, angle in zip(self.CUSTOM_OBJECT_LOCATION["colors"], self.CUSTOM_OBJECT_LOCATION["locations"], self.CUSTOM_OBJECT_LOCATION["angles"]):
                 # add new urdf files at /home/makramchahine/miniconda3/envs/multimodal/lib/python3.8/site-packages/pybullet_data/samurai.urdf
-
-                print(f"added {color} at {location}")
+                print(f"added {color} at {location} at {angle}")
                 if color == 'cube':
                     self.object_ids["cube"].append(p.loadURDF(filename_map[color],
                         [*location, 0.1 + 0.5],
@@ -132,9 +132,10 @@ class CtrlAviary(BaseAviary):
                         globalScaling=0.3
                         ))
                 else:
+                    quat = p.getQuaternionFromEuler([0, 0, angle])
                     self.object_ids[color].append(p.loadURDF(filename_map[color],
                             [*location, 0.1 + 0.5],
-                            p.getQuaternionFromEuler([0,0,0]),
+                            quat,
                             physicsClientId=self.CLIENT,
                             globalScaling=0.4,
                             ))

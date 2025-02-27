@@ -66,7 +66,9 @@ def run_pybullet_only_hike(
         colab=DEFAULT_COLAB,
         record_hz = DEFAULT_SAMPLING_FREQ_HQ,
         move_whales=DEFAULT_MOVE_WHALES,
-        use_icp=False,
+        goal_assignment=None,
+        drone_formation_type="line",
+        target_obj="B",
 ):
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
@@ -78,9 +80,10 @@ def run_pybullet_only_hike(
     sim_dir = os.path.join(output_folder, sim_name)
     setup_folders(sim_dir, num_drones)
 
-    Theta = random.random() * 2 * np.pi
+    # Theta = random.random() * 2 * np.pi
     Theta = 0
-    Theta0 = 0 # don't rotate the drone
+    Thetas = [0] + [0 for _ in range(num_drones - 1)]
+    Theta0s = [0] + [random.choice([0.175 * np.pi, -0.175 * np.pi]) for _ in range(num_drones - 1)] # init rotations for all tracking drones
     Theta_offset = 0 #random.choice([0.175 * np.pi, -0.175 * np.pi])
     
     # ! Initialize drone locations + starting cube object
@@ -105,17 +108,20 @@ def run_pybullet_only_hike(
     #* Object setup
     obj_loc_global = [convert_to_global(obj_loc_rel, Theta) for obj_loc_rel in ordered_locs]
     TARGET_LOCATIONS = obj_loc_global
+    obj_rotations = [np.random.uniform(0, np.pi) for _ in ordered_locs]
+
     print(f"TARGET_LOCATIONS: {TARGET_LOCATIONS}")
+    print(f"ANGLE ROTATIONS: {obj_rotations}")
     INIT_XYZS = []
     for i, rel_pos in enumerate(rel_drone_locs):
         if i == 0:
             height = SCOUT_H
         else:
             height = H
-        INIT_XYZS.append([*convert_to_global(rel_pos, Theta), height])
+        INIT_XYZS.append([*convert_to_global(rel_pos, Thetas[i]), height])
     INIT_XYZS = np.array(INIT_XYZS)
     
-    INIT_RPYS = np.array([[0, 0, Theta0 + Theta_offset] for d in range(num_drones)])
+    INIT_RPYS = np.array([[0, 0, Theta0s[d] + Theta_offset] for d in range(num_drones)])
     AGGR_PHY_STEPS = int(simulation_freq_hz / control_freq_hz) if aggregate else 1
 
     NUM_WP = control_freq_hz * duration_sec
@@ -149,7 +155,8 @@ def run_pybullet_only_hike(
                          custom_obj_location=None if vanish_mode else
                             {
                                 "colors": ordered_objs,
-                                "locations": obj_loc_global
+                                "locations": obj_loc_global,
+                                "angles": obj_rotations,
                             }
                         )
     
@@ -161,7 +168,9 @@ def run_pybullet_only_hike(
                                                        env=env, sim_dir=sim_dir, 
                                                        num_drones=num_drones,
                                                        lead_drone=True, 
-                                                       init_position=rel_drone_locs[i]) 
+                                                       init_position=rel_drone_locs[i],
+                                                       formation_type=drone_formation_type, 
+                                                       goal_assignment=goal_assignment) 
         else:
             drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), 
                                                    env=env, 
@@ -195,7 +204,7 @@ def run_pybullet_only_hike(
 
     prepare_switch_tracking = False # flag to switch to tracking mode
     switch_timestep = None # init for switch timestep when preparing to switch to tracking mode
-    done_icp = False
+    done_assignments = False
 
     for i in trange(0, int(STEPS), AGGR_PHY_STEPS):
         # State of drone at a time step
@@ -210,7 +219,7 @@ def run_pybullet_only_hike(
         #### Compute control at the desired frequency ##############
         if i % REC_EVERY_N_STEPS == 0:
             out = [[0 for _ in range(4)] for _ in range(num_drones)]
-            if drone_models[str(0)].mode == "search":
+            if drone_models["0"].mode == "search":
                 # get lead drone image
                 rgb, _, seg = env._getDroneImages(0)
                 if i % (REC_EVERY_N_STEPS * 10) == 0:
@@ -225,10 +234,16 @@ def run_pybullet_only_hike(
                     print("LEAD DRONE DETECTED WHALES!!")
                     drone_models["0"].mode = "whales"
                     drone_models["0"].calc_search_target_points()
+                    # other drones receive num_whales signal message
+                    for d in range(1, num_drones):
+                        drone_models[str(d)].receive_command()
                 else:
-                    out[0] = drone_models["0"].search_step(i)
-                
-            elif drone_models[str(0)].mode == "whales":
+                    if drone_models["0"].prev_whale_count == 0:
+                        out[0] = drone_models["0"].search_step(i)
+                    else:
+                        out[0], _ = drone_models["0"].get_whales_center(seg, rgb)
+
+            elif drone_models["0"].mode == "whales":
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
                     if i % (REC_EVERY_N_STEPS * 10) == 0:
@@ -252,7 +267,7 @@ def run_pybullet_only_hike(
                         if pred:
                             drone_models[str(d)].mode = "whales"
 
-                # check all other drones are in view of drone
+                # check all other drones are in view of formation position 
                 if not prepare_switch_tracking and drone_models["0"].all_drones_in_position(dist_to_target):
                     print("ALL DRONES IN POSITION: SWITCHING TO TRACKING MODE IN 300 TIME STEPS")
                     prepare_switch_tracking = True
@@ -274,12 +289,17 @@ def run_pybullet_only_hike(
                                         frame_num=int(i / CTRL_EVERY_N_STEPS),
                                         )
 
-                    if d == 0 and use_icp and not done_icp:
-                        success, vecs, _ = drone_models[str(0)].icp_analysis()
-                        if not success:
-                            print("ICP failed: switching to whales mode")
-                            for d in range(num_drones):
-                                drone_models[str(d)].mode = "whales"
+                    if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
+                        # ICP case
+                        if goal_assignment == "icp":
+                            success, vecs, _ = drone_models["0"].icp_analysis()
+                            if not success:
+                                print("ICP failed: switching to whales mode")
+                                for d in range(num_drones):
+                                    drone_models[str(d)].mode = "whales"
+                        # GNN case
+                        else:
+                            drone_models["0"].gnn_analysis()
 
                         for d in range(num_drones):
                             if d == 0:
@@ -293,17 +313,17 @@ def run_pybullet_only_hike(
                                 for d in range(1, num_drones):
                                     drone_models[str(d)].mode = "landing"
 
-                        elif drone_models[str(d)].mode in ["tracking", "centered"] and use_icp and done_icp:
-                            out[d] = drone_models[str(d)].track_whale_prev_center(seg, rgb) 
-                            if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(drone_models[str(d)].prev_target_pixel_pos, seg.shape):
-                               drone_models[str(d)].mode = "centered"
-                               print(f"Drone {d} is centered on whale: switching to centered mode")
-                                
-                        elif drone_models[str(d)].mode == ["tracking", "centered"] and not use_icp:
-                            out[d], centered = drone_models[str(d)].track_whale(seg, rgb)
-                            if drone_models[str(d)].mode != "centered" and centered:
-                                drone_models[str(d)].mode = "centered"
-                                print(f"Drone {d} is centered on whale: switching to centered mode")
+                        elif drone_models[str(d)].mode in ["tracking", "centered"]:
+                            if goal_assignment in ["icp", "gnn"] and done_assignments:
+                                out[d] = drone_models[str(d)].track_whale_prev_center(seg, rgb) 
+                                if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(drone_models[str(d)].prev_target_pixel_pos, seg.shape):
+                                    drone_models[str(d)].mode = "centered"
+                                    print(f"Drone {d} is centered on whale: switching to centered mode")
+                            else:            
+                                out[d], centered = drone_models[str(d)].track_whale(seg, rgb)
+                                if drone_models[str(d)].mode != "centered" and centered:
+                                    drone_models[str(d)].mode = "centered"
+                                    print(f"Drone {d} is centered on whale: switching to centered mode")
 
                         # landing mode
                         elif drone_models[str(d)].mode == "landing":
@@ -314,7 +334,7 @@ def run_pybullet_only_hike(
                                 out[d] = [0, 0, 0, 0]
                         elif drone_models[str(d)].mode == "complete":
                             out[d] = [0, 0, 0, 0]
-                    done_icp = True
+                    done_assignments = True
             else:
                 raise Exception("Invalid drone mode")
 
@@ -338,7 +358,7 @@ def run_pybullet_only_hike(
                 fx_sign = random.choice([-1, 1])
                 fy = random.uniform(0.05, 0.1)
                 fy_sign = random.choice([-1, 1])
-                for obj in env.object_ids["B"]:
+                for obj in env.object_ids[target_obj]:
                     pos, orn = p.getBasePositionAndOrientation(obj)
                     x, y = pos[0], pos[1]
                     p.resetBasePositionAndOrientation(obj, [x+fx*fx_sign, y+fy*fy_sign, pos[2]], orn)
@@ -357,7 +377,7 @@ def run_pybullet_only_hike(
                     with open(sim_dir + '/target_pos.csv', mode='a') as f:
                         target_pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                         positions = []
-                        for obj in env.object_ids["B"]:
+                        for obj in env.object_ids[target_obj]:
                             B_pos = p.getBasePositionAndOrientation(obj)[0]
                             positions = positions + list(B_pos)
                         target_pos_writer.writerow([i, *positions])
@@ -379,13 +399,13 @@ def run_pybullet_only_hike(
                 # plot target path
                 if move_whales:
                     data = pd.read_csv(os.path.join(sim_dir, f"target_pos.csv"))
-                    for i, obj in enumerate(env.object_ids["B"]):
+                    for i, obj in enumerate(env.object_ids[target_obj]):
                         x = data.iloc[:, 1 + 3 * i]
                         y = data.iloc[:, 2 + 3 * i]
                         B_pos = p.getBasePositionAndOrientation(obj)[0]
                         plt.plot(x, y, label=f"Target {i} Path")
 
-                for i, obj in enumerate(env.object_ids["B"]):
+                for i, obj in enumerate(env.object_ids[target_obj]):
                     B_pos = p.getBasePositionAndOrientation(obj)[0]
                     plt.scatter(B_pos[0], B_pos[1])
                 

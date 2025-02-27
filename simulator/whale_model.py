@@ -8,11 +8,15 @@ import csv
 from simulator.icp import icp
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm
+import dgl
+import torch
+from .gnn.modelv2 import NonLinearModel
 
 # IMPORTANT CONSTANTS FOR RECON SEARCH
 SEARCH_SPEED = 0.25
 DEFAULT_SPEED = 0.12
 WHALE_TRACK_SPEED = 0.10
+WHALE_CHECK_THRESHOLD = 75 # Number of iterations whale count is the same before switching to whales mode
 VERT_TIME = 2200
 TURN_TIME = 4800
 LANDING_SPEED = -0.35
@@ -36,6 +40,7 @@ class WhaleDroneModel:
         self.timestep = -1
         self.target_obj_index = -1 # uninitialized at start
         self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position
+        self.num_whales = None # initialized in whale search stage once scout drone determines how many whales there are
 
     def set_other_drones(self, other_drones):
         # map of ids to drone objects 
@@ -129,6 +134,7 @@ class WhaleDroneModel:
 
     def check_whales(self, seg, rgb):
         '''
+        THIS IMPLEMENTATION IS ONLY FOR TRACKING DRONES - SCOUTING DRONE IMPLEMENTATION BELOW
         Given a drone shot image at a given time step, segment the image and find global positions of all objects in
         image. Calculates velocity drone needs to fly to reach object. 
         '''
@@ -137,7 +143,7 @@ class WhaleDroneModel:
         count = 0
         for x, y in centers:
             count += int(self.check_color(rgb[int(x), int(y)]))
-        return count >= self.num_drones - 1
+        return count >= self.num_whales
     
     def pixel_to_world_velocity(self, pixel_coord, img_dims):
         '''
@@ -147,7 +153,7 @@ class WhaleDroneModel:
         x, y = pixel_coord
         dx, dy = -x + m/2, y - n/2
         incr_constant = np.sqrt(WHALE_TRACK_SPEED ** 2 / (dx ** 2 + dy ** 2))
-        self.write_debug_file([x, y, dx, dy])
+        # self.write_debug_file([x, y, dx, dy])
         return [dy * incr_constant, dx * incr_constant, 0, 0]
 
     def get_whale_center_list(self, seg, rgb):
@@ -193,7 +199,6 @@ class WhaleDroneModel:
         return False
 
     # tracking stage functions
-
     def check_centered(self, target_center, img_shape):
         return (target_center[0] - img_shape[0] // 2)**2 + (target_center[1] - img_shape[1] // 2)**2 < 10
 
@@ -246,10 +251,6 @@ class WhaleDroneModel:
         # rot_velocity = self.rotate_velocity([dx * incr_constant, dy * incr_constant])
 
     def receive_command(self):
-        # check if we aren't too close to another drone, only freeze if we are drone 2
-        if self.check_drone_proximity() and self.drone_id == "2":
-            return [0, 0, 0, 0]
-
         if self.in_command is not None:
             command_type, text = self.in_command.split('|')
             if command_type == "velocity":
@@ -260,6 +261,9 @@ class WhaleDroneModel:
                 x, y = text.split(',')
                 return self.calc_velocity_to_point([float(x), float(y)])
         
+            elif command_type == "num_whales":
+                self.num_whales = int(text)
+                return [0, 0, 0, 0]
         # reset input channel
         self.in_command = None
 
@@ -299,7 +303,7 @@ class WhaleDroneModel:
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
-    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position):
+    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment):
         super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, lead_drone=lead_drone)
         self.search_state = 0 # 0: flying (1, 1), 1: flying -x direction, 2: flying x direction, 3: flying vertically, 4: turning
         self.start_vertical_timestep = 0 # timestep when drone starts moving vertically
@@ -307,8 +311,14 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         self.target_y = 0
         self.init_velocity = [(9.0 - init_position[0]) / 24, (9 - init_position[1]) / 24, 0, 0]
         self.search_target_points = [] # (dx, dy) for the positions that each tagging drone should be at relative to search drone before tracking commences
-        print("LEAD DRONE INIT VELOCITY IS: ", self.init_velocity)
-
+        self.formation_type = formation_type
+        self.prev_whale_count = 0        
+        self.whale_count_observation_streak = 0 # number of consecutive time steps where whale count is the same
+        self.gnn_model = NonLinearModel(attr_dim=16,max_edges=5,L=1) # only for goal assignment with GNN
+        if goal_assignment == "gnn":
+            self.gnn_model.load_state_dict(torch.load("pybullet_env/simulator/gnn/model_10agents_env4m_comvar_maxedges5_3conv_modelv2.pt"))
+            self.gnn_model.eval()
+            
     def stop_turn(self, timestep):
         # adjust currrent yaw to be 0
         cur_yaw = self.env._getDroneStateVector(int(self.drone_id))[9]
@@ -380,14 +390,45 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                     self.turn_target_yaw = -np.pi / 2
             return [0, -SEARCH_SPEED, 0, 0]
         
+    def check_whales(self, seg, rgb):
+        '''
+        Given a drone shot image at a given time step, segment the image and find global positions of all objects in
+        image. Scout drone tracks whales until it confirms exactly how many whales there are. 
+        '''
+        # find center points of segmented image
+        centers, _ = self.get_whale_center_list(seg, rgb)
+        count = len(centers)
+        if self.whale_count_observation_streak > WHALE_CHECK_THRESHOLD:
+            self.num_whales = count
+            # set all other drones num_whales to count
+            self.send_command_all_drones("num_whales", str(count))
+            return True
+        elif count != 0 and count == self.prev_whale_count: 
+            self.whale_count_observation_streak += 1
+            return False
+        else:
+            self.prev_whale_count = count
+            self.whale_count_observation_streak = 0
+            return False
+
     def calc_search_target_points(self):
-        search_width = min(self.num_drones - 2, 2.5)
-        dx = -search_width / 2
-        dy = 0
-        for _ in range(self.num_drones - 1):
-            self.search_target_points.append((dx, dy))
-            dx += search_width / (self.num_drones - 2)
-    
+        if self.formation_type == "line":
+            search_width = min(self.num_drones - 2, 2.5)
+            dx = -search_width / 2
+            dy = 0
+            for _ in range(self.num_drones - 1):
+                self.search_target_points.append((dx, dy))
+                dx += search_width / (self.num_drones - 2)
+        elif self.formation_type == "polygon":
+            search_radius = 0.75
+            variance = 0.25 
+            for i in range(self.num_drones - 1):
+                variance_dist = np.random.uniform(0, variance)
+                angle = 2 * np.pi * i / (self.num_drones - 1)
+                dx = (search_radius + variance_dist) * np.cos(angle)
+                dy = (search_radius + variance_dist) * np.sin(angle)
+                self.search_target_points.append((dx, dy))
+
     def all_drones_in_position(self, dist_to_target):
         search_drone_pos = self.get_drone_state()[:2]
         if np.linalg.norm(dist_to_target) > 2:
@@ -395,8 +436,11 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         for drone in self.other_drones:
             if drone != self.drone_id:
                 drone_pos = self.other_drones[drone].get_drone_state()[:2]
-                dx = self.search_target_points[int(drone) - 1][0]
-                if np.linalg.norm(np.array(drone_pos) - np.array(search_drone_pos)) > abs(dx) + 0.2:
+                real_dx = abs(drone_pos[0] - search_drone_pos[0])
+                real_dy = abs(drone_pos[1] - search_drone_pos[1])
+                target_dx = abs(self.search_target_points[int(drone) - 1][0])
+                target_dy = abs(self.search_target_points[int(drone) - 1][1])
+                if real_dx > target_dx + 0.1 or real_dy > target_dy + 0.1:
                     return False
                 if self.other_drones[drone].mode != "whales":
                     return False
@@ -414,12 +458,12 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             if drone != self.drone_id:
                 if self.other_drones[drone].mode != "complete":
                     return False
-        return True    
+        return True        
 
-    def icp_analysis(self):
+    def get_drone_to_whale_dists(self):
         '''
-        Perform ICP analysis on drone images to check if drones agree on whale positions,
-        then outputs velocity commands for each drone 
+        Performs ICP to get consensus on whale positions between drones, and then calculates bounding boxes/distances
+        between each whale and drone to then be used for goal assignment
         '''
         all_whale_boxes = []
         net_corr = [i for i in range(self.num_drones - 1)] # mapping from drone 1 positions to drone x positions aggregatively
@@ -461,6 +505,30 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             for j in range(len(all_whale_boxes[i])):
                 whale_center = np.mean(all_whale_boxes[i][j], axis=0)
                 drone_to_whale_dists[i][j] = norm(whale_center - center_pixel)
+        return drone_to_whale_dists, all_whale_boxes
+
+    def gnn_analysis(self):
+        '''
+        Perform GNN analysis on drone images to check if drones agree on whale positions,
+        then outputs velocity commands for each drone to target specific whale positions
+        Assumes decentralized communication between drones   
+        '''
+        print("PERFORMING GNN ANALYSIS ON WHALE EDGES")
+        drone_to_whale_dists, all_whale_boxes = self.get_drone_to_whale_dists()
+        
+        # convert graph to dgl format
+        num_agents, num_targets = drone_to_whale_dists.shape
+        src_ids = np.repeat(np.arange(num_agents), num_targets)
+        target_ids = np.tile(np.arange(num_targets), num_agents)
+        graph = dgl.heterograph({("agent", "observes", "target"): (src_ids, target_ids)})
+        edge_distances = torch.tensor(drone_to_whale_dists.flatten(), dtype=torch.float32)
+        graph.edges["observes"].data["distance"] = edge_distances
+        with torch.no_grad():
+            pred, edges = self.gnn_model(graph)
+            assert False
+
+    def icp_analysis(self):
+        drone_to_whale_dists, all_whale_boxes = self.get_drone_to_whale_dists() 
         _, drone_col_assign = linear_sum_assignment(drone_to_whale_dists)
         velocity_vecs = []
         target_pixels = []
