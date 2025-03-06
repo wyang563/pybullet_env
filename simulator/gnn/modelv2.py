@@ -4,8 +4,8 @@ import copy
 import dgl.function as fn
 import torch.nn.functional as F
 
-# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-device = 'cpu'
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+# device = 'cpu'
 
 def retrieve_comm_adj(comm_adj,agents_ids):
     sub_adj = torch.index_select(comm_adj, 0, agents_ids)
@@ -22,15 +22,16 @@ def build_comm_adj_list(comm_adj,src_ids):
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_feat_edge, out_feat_edge,max_edges):
+    def __init__(self, in_feat_edge, out_feat_edge, max_edges):
         super().__init__()
         self.max_edges = max_edges
         self.mlp_edge = nn.Sequential(nn.Linear(in_feat_edge, 2*out_feat_edge),
-        nn.ReLU(), nn.Linear(2*out_feat_edge, out_feat_edge))
+                                    nn.ReLU(), 
+                                    nn.Linear(2*out_feat_edge, out_feat_edge))
         
-    def apply_edges(self,edges):
+    def apply_edges(self, edges):
         # retrieve information from the dest agent nodes of the edges gtoa
-        edges_ids = torch.zeros(2,edges.edges()[0].shape[0],dtype=torch.int32,device=device)
+        edges_ids = torch.zeros(2, edges.edges()[0].shape[0], dtype=torch.int32,device=device)
         edges_ids[0,:] = edges.edges()[0]
         edges_ids[1,:] = edges.edges()[1]
         edges_ids = torch.transpose(edges_ids,0,1)
@@ -39,7 +40,7 @@ class Encoder(nn.Module):
         dest_ids = edges_ids[1,:]
         return {'dst_ids':dest_ids}
 
-    def forward(self,graph):
+    def forward(self, graph):
         edge_features = graph.edges[('agent','assigns','goal')].data['he']
         h = self.mlp_edge(edge_features)
         encoded_graph = copy.deepcopy(graph)
@@ -52,14 +53,15 @@ class Encoder(nn.Module):
         with graph.local_scope():
             encoded_graph.apply_edges(self.apply_edges, etype=('goal','assigns','agent'))
             src_ids = encoded_graph.edges[('goal','assigns','agent')].data['dst_ids']
-        src_ids = src_ids.reshape(src_ids.shape[0]//self.max_edges,self.max_edges)
+        num_goal_nodes = encoded_graph.num_nodes('goal')
+        src_ids = src_ids.reshape(num_goal_nodes, self.max_edges)
+
         encoded_graph.nodes['goal'].data['src_ids'] = src_ids
 
         comm_adj = graph.adj(etype=('agent','communicates','agent')).to_dense().to(device)
         encoded_graph.nodes['goal'].data['comm_adj_list'] = build_comm_adj_list(comm_adj,src_ids)
             
-        return encoded_graph,h
-    
+        return encoded_graph, h
 
 class EdgeConv(nn.Module):
     def __init__(self, in_feat_edge, hid_feat, out_feat,max_edges):
@@ -225,9 +227,9 @@ class NonLinearModel(nn.Module):
 
     def forward(self,graph):
         encoded_graph, h = self.encoder(graph)
-        for l in range(self.L):
-            hva = self.agent_conv(encoded_graph)
-            hvg = self.goal_conv(encoded_graph)
+        for _ in range(self.L):
+            _ = self.agent_conv(encoded_graph)
+            _ = self.goal_conv(encoded_graph)
             h = self.edge_conv(encoded_graph)
         h,edges = self.decoder(h,encoded_graph)
         return h,edges

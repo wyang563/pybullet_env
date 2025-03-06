@@ -13,11 +13,13 @@ variable_timesteps = [
 
 # list with dims [num_unique_runs, length of sequence]
 num_objects = 5
-object_type = "P_B"
+object_type = "O_B"
 objects = []
 use_fixed_locs = false 
-fixed_obj_locs = [[1.0, 2.0], [2.6, 2.5], [2.2, 2.5], [2.5, 2.0], [2.25, 2.25]]
+fixed_obj_locs = [[3.75, 4.0], [5.2, 5], [4.4, 5], [5, 4], [3.5, 3.5]]
 move_whales = false
 goal_assignment = "gnn"
+gnn_model_path = "pybullet_env/simulator/gnn/models/old_models/model_10agents_env4m_comvar_maxedges5_3conv_modelv2_lastepoch.pt"
 formation_type = "polygon" # either polygon or line (line by default)
 duration_sec = 15 # not actually being used effectively right now
+debug = true

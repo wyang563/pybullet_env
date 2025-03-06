@@ -19,6 +19,7 @@ filename_map = {
     'G': f"{FILE_PREFIX}/sphere2green.urdf",
     'Y': f"{FILE_PREFIX}/sphere2yellow.urdf",
     'P_B': f"{FILE_PREFIX}/pyramid_blue.urdf",
+    'O_B': f"{FILE_PREFIX}/oval_blue.urdf",
     'cube' : f"{FILE_PREFIX}/cube.urdf",
 }
 

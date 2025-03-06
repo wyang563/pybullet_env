@@ -1,6 +1,23 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm
+import copy
+import matplotlib.pyplot as plt
+
+def plot_point_clouds(index, points1, points2, run_number):
+    centroids1 = np.mean(points1, axis=1)
+    centroids2 = np.mean(points2, axis=1)
+    # points1_flat = points1.reshape(-1, 2)
+    # points2_flat = points2.reshape(-1, 2)
+    plt.figure(figsize=(6, 6))
+    # plt.scatter(points1_flat[:, 0], points1_flat[:, 1], color='orange', label='Points 1')
+    # plt.scatter(points2_flat[:, 0], points2_flat[:, 1], color='blue', label='Points 2')
+    plt.scatter(centroids1[:, 0], centroids1[:, 1], color='red', label='Centroids 1')
+    plt.scatter(centroids2[:, 0], centroids2[:, 1], color='green', label='Centroids 2')
+    plt.title(f"Plot Point Clouds visualized {index}")
+    plt.savefig(f"pybullet_env/simulator/icp_plots/point_clouds_{run_number}_{index}.png")
+    plt.axis('equal')
+    plt.close()
 
 def best_fit_transform(A, B):
     assert A.shape == B.shape, "found shapes A: {} and B: {}".format(A.shape, B.shape)
@@ -47,23 +64,34 @@ def calc_pair_box_distance(box1, box2):
     row_ind, col_ind = linear_sum_assignment(pairwise_distances)
     return col_ind, np.sum(pairwise_distances[row_ind, col_ind])   
 
-def calc_all_box_distance(boxes1, boxes2):
+def calc_all_box_distance(boxes1, boxes2, use_centers=False):
     assert boxes1.shape == boxes2.shape, "expected matrix of boxes for both inputs to have the same shape"
-    pairwise_box_dists = np.zeros((boxes1.shape[0], boxes2.shape[0]))
-    pairwise_corr_indices = np.zeros((boxes1.shape[0], boxes2.shape[0], 4))
+    num_boxes = boxes1.shape[0]
+    pairwise_box_dists = np.zeros((num_boxes, num_boxes))
+    pairwise_corr_indices = np.zeros((num_boxes, num_boxes, 4), dtype=int)
+    pairwise_corr_indices[...] = np.arange(4)
     for i in range(boxes1.shape[0]):
         for j in range(boxes2.shape[0]):
-            pairwise_corr_indices[i, j], pairwise_box_dists[i, j] = calc_pair_box_distance(boxes1[i], boxes2[j])
-    box_corr_row_ind, box_corr_col_ind = linear_sum_assignment(pairwise_box_dists)
-    flat_corr_indices = np.zeros((boxes1.shape[0] * 4), dtype=int)
-    box_assign_dist = 0
-    for row_ind, col_ind in zip(box_corr_row_ind, box_corr_col_ind):
-        box_assign_dist += pairwise_box_dists[row_ind, col_ind]
-        for i, ind in enumerate(pairwise_corr_indices[row_ind, col_ind]):
-            flat_corr_indices[row_ind * 4 + i] = 4 * col_ind + ind
-    return box_assign_dist, flat_corr_indices.ravel(), box_corr_col_ind
+            if use_centers:
+                center1 = np.mean(boxes1[i], axis=0)
+                center2 = np.mean(boxes2[j], axis=0)
+                pairwise_box_dists[i, j] = norm(center1 - center2)
+            else:
+                pairwise_corr_indices[i, j], pairwise_box_dists[i, j] = calc_pair_box_distance(boxes1[i], boxes2[j])
 
-def icp(A, B, max_iters=20, tolerance=0.0001):
+    nearest_indices = np.argmin(pairwise_box_dists, axis=1)
+    # box_corr_row_ind, box_corr_col_ind = linear_sum_assignment(pairwise_box_dists)
+    flat_corr_indices = np.zeros((num_boxes * 4), dtype=int)
+    box_assign_dist = 0
+    for i in range(num_boxes):
+        j = nearest_indices[i]
+        box_assign_dist += pairwise_box_dists[i, j]
+        corner_map = pairwise_corr_indices[i, j]
+        for c, corner_j in enumerate(corner_map):
+            flat_corr_indices[i * 4 + c] = 4 * j + corner_j
+    return box_assign_dist, flat_corr_indices.ravel(), nearest_indices 
+
+def icp(A, B, max_iters=20, tolerance=0.0001, use_centers=False, outlier_sigma=2, run_number=0):
     assert A.shape == B.shape, "A and B must have the same shape"
 
     # Make points homogeneous, copy them to maintain the originals
@@ -75,23 +103,36 @@ def icp(A, B, max_iters=20, tolerance=0.0001):
         # convert coordinates to homogenous flattened list of coordinates
         A_flattened = A.reshape(-1, 2)
         B_flattened = B.reshape(-1, 2)
-        m = A_flattened.shape[1]
-        src = np.ones((m+1, A_flattened.shape[0])) 
-        dst = np.ones((m+1, B_flattened.shape[0]))
-        src[:m, :] = np.copy(A_flattened.T)
-        dst[:m, :] = np.copy(B_flattened.T)
-
+            
         # Find the nearest neighbors between the current source and destination points
-        distances, indices, box_assign_inds = calc_all_box_distance(A, B)
+        distances, indices, box_assign_inds = calc_all_box_distance(A, B, use_centers)
+        pair_dists = np.array([np.linalg.norm(A_flattened[k] - B_flattened[idx]) 
+                               for k, idx in enumerate(indices)])
+        mean_dist = np.mean(pair_dists)
+        std_dist = np.std(pair_dists)
+        threshold = mean_dist + outlier_sigma * std_dist
+        inlier_mask = pair_dists < threshold
+        inlier_A = A_flattened[inlier_mask]
+        inlier_B = B_flattened[indices[inlier_mask]]
+        m = A_flattened.shape[1] 
+
+        src = np.ones((m+1, inlier_A.shape[0])) 
+        dst = np.ones((m+1, inlier_B.shape[0]))
+        src[:m, :] = np.copy(inlier_A.T)
+        dst[:m, :] = np.copy(inlier_B.T)
+
         correspondence_indices = box_assign_inds
 
         # Compute the transformation between the current source and nearest destination points
-        T, _, _ = best_fit_transform(src[:m, :].T, dst[:m, indices].T)
+        T, _, _ = best_fit_transform(src[:m, :].T, dst[:m, :].T)
         
         # Update the current source and update A (N, 4, 2) matrix
-        src = np.dot(T, src)
+        org_src = np.ones((m+1, A_flattened.shape[0]))
+        org_src[:m, :] = np.copy(A_flattened.T) 
+        org_src = np.dot(T, org_src)
         A = np.zeros((A.shape[0], 4, 2))
-        A = np.copy(src[:src.shape[0] - 1, :].T.reshape(-1, 4, 2))
+        A = np.copy(org_src[:org_src.shape[0] - 1, :].T.reshape(-1, 4, 2))
+        # plot_point_clouds(i, A, B, run_number)
 
         # Check error
         if np.abs(prev_error - distances) < tolerance:
@@ -99,8 +140,37 @@ def icp(A, B, max_iters=20, tolerance=0.0001):
         prev_error = distances
 
     # Compute the final transformation
-    T, _, _ = best_fit_transform(original_A, src[:m, :].T)
-    return T, correspondence_indices
+    T, _, _ = best_fit_transform(original_A, org_src[:m, :].T)
+
+    # compute the final correspondence indices, these are bijective
+
+    return T, correspondence_indices, prev_error 
+
+def rot_icp(A, B, use_centers=False):
+    '''
+    Rotatet A by 90˚ increments, and return the correspondence indices with the lowest error
+    '''
+    lowest_error = float('inf')
+    low_correspondence = None
+    low_transform = None
+    N = 32
+    for rot_theta in [360 / N * i for i in range(N)]:
+        R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
+        transformed_points = []
+        for box in A:
+            transformed_box = []
+            for point in box:
+                point_array = np.array(point)
+                transformed_point = np.dot(R, point_array)
+                transformed_box.append(transformed_point.tolist())
+            transformed_points.append(transformed_box)
+
+        T, corr_indices, error = icp(np.array(transformed_points), B, use_centers=use_centers, run_number=rot_theta)        
+        if error < lowest_error:
+            lowest_error = error 
+            low_correspondence = corr_indices
+            low_transform = T
+    return low_transform, low_correspondence, lowest_error 
 
 if __name__ == "__main__":
     # A = np.array([[1, 0], [1, 1], [4, 3], [-9, 1]])

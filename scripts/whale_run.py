@@ -49,7 +49,10 @@ def generate_trajectories(config):
     if config["use_fixed_locs"]:
         assert len(config["fixed_obj_locs"]) == num_objects, "Number of fixed locations should match number of objects"
         return objects, config["fixed_obj_locs"]
-    locations_rel = generate_random_points(num_objects) 
+    if config["debug"]:
+        locations_rel = generate_random_points(num_objects, min_range=2.0, max_range=7.0) 
+    else:
+        locations_rel = generate_random_points(num_objects) 
     return objects, locations_rel
 
 def process_videos(output_folders):
@@ -122,4 +125,5 @@ if __name__ == "__main__":
                            goal_assignment=config['goal_assignment'],
                            drone_formation_type=formation_type,
                            target_obj=config['object_type'],
+                           gnn_model_path=config['gnn_model_path'],
                            )

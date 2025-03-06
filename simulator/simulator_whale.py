@@ -8,9 +8,6 @@ import numpy as np
 import pandas as pd
 import pybullet as p
 import matplotlib.pyplot as plt
-import copy
-from PIL import Image
-import torchvision
 from tqdm import trange
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
@@ -19,7 +16,7 @@ from gym_pybullet_drones.envs.VisionAviary import VisionAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.control.SimplePIDControl import SimplePIDControl
 from gym_pybullet_drones.utils.Logger import Logger
-from gym_pybullet_drones.utils.utils import sync, str2bool
+from gym_pybullet_drones.utils.utils import sync 
 from simulator.simulator_utils import *
 from simulator.whale_model import WhaleDroneModel, WhaleDroneLeadModel
 
@@ -69,6 +66,7 @@ def run_pybullet_only_hike(
         goal_assignment=None,
         drone_formation_type="line",
         target_obj="B",
+        gnn_model_path=None,
 ):
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
@@ -83,7 +81,8 @@ def run_pybullet_only_hike(
     # Theta = random.random() * 2 * np.pi
     Theta = 0
     Thetas = [0] + [0 for _ in range(num_drones - 1)]
-    Theta0s = [0] + [random.choice([0.175 * np.pi, -0.175 * np.pi]) for _ in range(num_drones - 1)] # init rotations for all tracking drones
+    Theta0s = [0] + [random.uniform(np.deg2rad(0), np.deg2rad(270)) for _ in range(num_drones - 1)] # init rotations for all tracking drones
+    # Theta0s = [0 for _ in range(num_drones)]
     Theta_offset = 0 #random.choice([0.175 * np.pi, -0.175 * np.pi])
     
     # ! Initialize drone locations + starting cube object
@@ -120,8 +119,10 @@ def run_pybullet_only_hike(
             height = H
         INIT_XYZS.append([*convert_to_global(rel_pos, Thetas[i]), height])
     INIT_XYZS = np.array(INIT_XYZS)
-    
+    print(f"INIT THETA ROTATIONS: {Theta0s}") 
     INIT_RPYS = np.array([[0, 0, Theta0s[d] + Theta_offset] for d in range(num_drones)])
+    print(f"INIT_XYZS: {INIT_XYZS}")
+    print(f"INIT_RPYS: {INIT_RPYS}")
     AGGR_PHY_STEPS = int(simulation_freq_hz / control_freq_hz) if aggregate else 1
 
     NUM_WP = control_freq_hz * duration_sec
@@ -170,7 +171,8 @@ def run_pybullet_only_hike(
                                                        lead_drone=True, 
                                                        init_position=rel_drone_locs[i],
                                                        formation_type=drone_formation_type, 
-                                                       goal_assignment=goal_assignment) 
+                                                       goal_assignment=goal_assignment,
+                                                       gnn_model_path=gnn_model_path) 
         else:
             drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), 
                                                    env=env, 
@@ -291,21 +293,32 @@ def run_pybullet_only_hike(
 
                     if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
                         # ICP case
+                        success = False
                         if goal_assignment == "icp":
                             success, vecs, _ = drone_models["0"].icp_analysis()
                             if not success:
                                 print("ICP failed: switching to whales mode")
                                 for d in range(num_drones):
                                     drone_models[str(d)].mode = "whales"
+                                prepare_switch_tracking = False
                         # GNN case
-                        else:
-                            drone_models["0"].gnn_analysis()
+                        elif goal_assignment == "gnn":
+                            success, vecs, _ = drone_models["0"].gnn_analysis()
+                            if not success:
+                                print("GNN failed: switching to whales mode")
+                                for d in range(num_drones):
+                                    drone_models[str(d)].mode = "whales"
+                                prepare_switch_tracking = False
 
-                        for d in range(num_drones):
-                            if d == 0:
-                                out[d], _ = drone_models[str(d)].get_whales_center(seg, rgb)
-                            else:
-                                out[d] = vecs[d - 1]
+                        if success:
+                            for d in range(num_drones):
+                                if d == 0:
+                                    out[d], _ = drone_models[str(d)].get_whales_center(seg, rgb)
+                                else:
+                                    out[d] = vecs[d - 1]
+                        else:
+                            for d in range(num_drones):
+                                out[d] = states[d][10:13] + [random.uniform(-0.1, 0.1)]
                     else:
                         if d == 0:
                             out[d], _ = drone_models[str(d)].get_whales_center(seg, rgb)
@@ -334,7 +347,8 @@ def run_pybullet_only_hike(
                                 out[d] = [0, 0, 0, 0]
                         elif drone_models[str(d)].mode == "complete":
                             out[d] = [0, 0, 0, 0]
-                    done_assignments = True
+                    if success:
+                        done_assignments = True
             else:
                 raise Exception("Invalid drone mode")
 
@@ -345,7 +359,7 @@ def run_pybullet_only_hike(
                                             cur_vel=states[d][10:13],
                                             cur_ang_vel=states[d][13:16],
                                             target_pos=states[d][:3],  # same as the current position
-                                            target_rpy=np.array([0, 0, 0]),  # keep current yaw
+                                            target_rpy=states[d][7:10],  # keep current yaw
                                             target_vel=out[d][:3],
                                             target_rpy_rates=np.array([0, 0, 0])
                                             )

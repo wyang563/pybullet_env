@@ -12,28 +12,30 @@ def check_disconnected_goals(nAgents,edges_goals):
     return False
 
 class GoalAssignmentDataset(DGLDataset):
-    def __init__(self,name,filename,max_edges):
+    def __init__(self,name,filename,max_edges, device):
         self.filename = filename
         self.max_edges = max_edges
+        self.device = device
         super().__init__(name=name)
         
     def keep_best_edges(self,glist,max_edges):
         for g,graph in enumerate(glist):
             # graph = graph.to(device)
             n_agents = graph.number_of_nodes()//2
-            if max_edges>n_agents:
+            if max_edges > n_agents:
                 max_edges = n_agents
             dist_edges = graph.edges[('goal','assigns','agent')].data['he']
-            # edges_to_remove = torch.tensor([],dtype=torch.int32,device=device)
-            edges_to_remove = torch.tensor([],dtype=torch.int32)
+            dist_edges = dist_edges.to(self.device)
+            edges_to_remove = torch.tensor([],dtype=torch.int32,device=self.device)
+            # edges_to_remove = torch.tensor([],dtype=torch.int32)
             for n in range(n_agents): # we want to select the best edges per goal, and not per agent, but the edges are ordered like (0,0),(1,0),(2,0) etc. The first indexes are the goals indexes. We want to compare along the same goal indexes.
                 # select the good indexes to compare
-                # indexes = torch.tensor([i for i in range(dist_edges.shape[0])],device=device)
-                indexes = torch.tensor([i for i in range(dist_edges.shape[0])])
+                indexes = torch.tensor([i for i in range(dist_edges.shape[0])],device=self.device)
+                # indexes = torch.tensor([i for i in range(dist_edges.shape[0])])
                 selected_indexes = indexes[indexes%n_agents==n]
                 # select the corresponding values in dist_edges
-                mask = torch.zeros(dist_edges.shape[0], dtype=bool)
-                # mask = torch.zeros(dist_edges.shape[0], dtype=bool,device=device)
+                # mask = torch.zeros(dist_edges.shape[0], dtype=bool)
+                mask = torch.zeros(dist_edges.shape[0], dtype=bool,device=self.device)
                 mask[selected_indexes] = True
                 dist_edges_selected = dist_edges[mask]
                 # extract the largest values (bad ones to be removed)
@@ -108,6 +110,7 @@ class GoalAssignmentDataset(DGLDataset):
     def process(self):
         glist,label_dict = dgl.load_graphs(self.filename)
         # self.labels = []
+        glist = [g.to(self.device) for g in glist]
         if self.max_edges!=None:
             # glist = self.keep_best_edges_goals(glist,self.max_edges)
             # glist = self.keep_best_edges_agents(glist,self.max_edges)
@@ -143,3 +146,10 @@ class GoalAssignmentDataset(DGLDataset):
         plt.hist(bins[:-1], bins, weights=counts)
         plt.show()
 
+if __name__ == "__main__":
+    dataset = GoalAssignmentDataset('goal_assignment_5agents_comVar','pybullet_env/simulator/gnn/data/train/datasetTRAIN_5agents_env6m_commRadiusVar_AllConnected_100.dgl',max_edges=5)
+    dataset.histogram_densities()
+    print("size of the dataset = ", dataset.__len__())
+    example_graph,_ = dataset.__getitem__(0)
+    print(example_graph.edges(etype=('agent','assigns','goal')))
+    print(example_graph.edges[('agent','assigns','goal')].data['he'].shape)

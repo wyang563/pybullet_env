@@ -5,13 +5,71 @@ from statistics import mean
 from math import sqrt
 from dataset import GoalAssignmentDataset
 from dgl.data.utils import split_dataset
-from evaluate import *
 # from model import NonLinearModel
-from modelv2 import NonLinearModel
-import argparse
+from pybullet_env.simulator.gnn.models.modelv2 import NonLinearModel
 
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 device = 'cpu'
+
+def compute_BinaryF1_accuracy(pred_flat, labels_flat):
+    """
+    Computes the binary F1 score between predicted assignments and ground truth labels.
+    Both inputs are 1D tensors (flattened) with binary values.
+    
+    Args:
+        pred_flat (torch.Tensor): Flattened tensor of predicted values.
+        labels_flat (torch.Tensor): Flattened tensor of ground truth binary labels.
+    
+    Returns:
+        float: The F1 score.
+    """
+    # Threshold predictions at 0.5 to obtain binary decisions.
+    preds = (pred_flat > 0.5).float()
+    
+    # Calculate true positives, false positives, and false negatives.
+    tp = ((preds == 1) & (labels_flat == 1)).sum().item()
+    fp = ((preds == 1) & (labels_flat == 0)).sum().item()
+    fn = ((preds == 0) & (labels_flat == 1)).sum().item()
+    
+    precision = tp / (tp + fp + 1e-7)
+    recall = tp / (tp + fn + 1e-7)
+    f1 = 2 * precision * recall / (precision + recall + 1e-7)
+    
+    return f1
+
+def compute_matching_accuracy(assignment, labels, BATCH_SIZE, nAgents):
+    """
+    Computes matching accuracy on a per-agent basis.
+    For each graph in the batch, for each agent the predicted goal is taken
+    as the one with maximum predicted value, and compared with the ground truth
+    (assumed to be a one-hot vector per agent).
+    
+    Args:
+        assignment (torch.Tensor): Predicted assignment tensor of shape (BATCH_SIZE, nAgents, nGoals).
+        labels (torch.Tensor): Flattened ground truth labels; will be reshaped to (BATCH_SIZE, nAgents, nGoals).
+        BATCH_SIZE (int): Batch size.
+        nAgents (int): Number of agents.
+        nGoals (int): Number of goal targets.
+    
+    Returns:
+        float: Fraction of agents that are correctly assigned.
+    """
+    # Reshape the flattened ground truth into a (BATCH_SIZE, nAgents, nGoals) matrix.
+    labels_matrix = labels.view(BATCH_SIZE, nAgents, nAgents)
+    
+    correct = 0
+    total = BATCH_SIZE * nAgents
+    
+    for b in range(BATCH_SIZE):
+        # For each agent in graph b, take the goal with maximum predicted value.
+        predicted_indices = assignment[b].argmax(dim=1)  # Shape: (nAgents,)
+        # For each agent, determine the ground truth goal (the index with the 1 in the one-hot label).
+        ground_truth_indices = labels_matrix[b].argmax(dim=1)  # Shape: (nAgents,)
+        
+        correct += (predicted_indices == ground_truth_indices).sum().item()
+    
+    return correct / total
+
 
 def get_assignment_from_pred(edges,pred,BATCH_SIZE,nAgents):
         assert pred.shape[0]==edges[0].shape[0]
@@ -43,32 +101,22 @@ def criterion(edges,pred,labels,BATCH_SIZE,nAgents):
         return 0.2*(loss_1+loss_2)/(2*BATCH_SIZE*sqrt(nAgents)*(nAgents-1))+0.8*(loss_pos+loss_neg)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--nAgents", type=int, default=None)
-    parser.add_argument("--nGoals", type=int, default=None)
-    parser.add_argument("--nEpochs", type=int, default=100)
-    parser.add_argument("--max_edges", type=int, default=None)
-    parser.add_argument("--dataset", type=str, default=None)
-    args = parser.parse_args()
-    nAgentsTrain = args.nAgents 
-    nGoals = args.nGoals
-    nEpochs = args.nEpochs 
-    max_edges = args.max_edges 
-    dataset_path = args.dataset
+    nAgentsTrain = 5
+    nEpochs = 40
+    max_edges = 5
     
     dgl.seed(1215)
     torch.manual_seed(1215)
 
     # Load dataset
     print('Loading the dataset...',end='\r')
-    dataset_name = dataset_path.split('/')[-1].split('.')[0]
-    dataset = GoalAssignmentDataset(dataset_name, dataset_path, max_edges=max_edges)
+    dataset = GoalAssignmentDataset(name="2000", filename='pybullet_env/simulator/gnn/data/train/datasetTRAIN_52000.dgl',max_edges=max_edges)
     [dataset_train,_,_]= split_dataset(dataset, frac_list=[1.0,0.0,0.0], shuffle=True)
     # dataset.histogram_densities()
     BATCH_SIZE = 200
     dataloader = dgl.dataloading.GraphDataLoader(dataset_train, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
     print('Done.',end='\r')
-    # example_graph,_ = dataset.__getitem__(0)
+    example_graph,_ = dataset.__getitem__(0)
     # print(example_graph.edges(etype=('agent','assigns','goal')))
     # print(example_graph.edges[('agent','assigns','goal')].data['he'].shape)
     # assert 1==0
@@ -114,7 +162,7 @@ def main():
                 losses_batch.append(loss.item())
                 assignment = get_assignment_from_pred(edges,pred,BATCH_SIZE,nAgentsTrain)
                 accuracy = compute_BinaryF1_accuracy(assignment.flatten(),labels)
-                matching_accuracy = compute_matching_accuracy(assignment,BATCH_SIZE,nAgentsTrain)
+                matching_accuracy = compute_matching_accuracy(assignment,labels,BATCH_SIZE,nAgentsTrain)
                 accuracy_batches.append(accuracy)
                 matching_accuracy_batches.append(matching_accuracy)
             batch_nb +=1
