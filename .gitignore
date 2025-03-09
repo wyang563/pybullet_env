@@ -442,3 +442,8 @@ TSWLatexianTemp*
 #*Notes.bib
 simulator/gnn/*.pt
 simulator/gnn/data
+simulator/gnn/models
+icp/icp_plots/*
+simulator/points.json
+icp/whale_data/*
+icp/logs/*

@@ -67,6 +67,7 @@ def run_pybullet_only_hike(
         drone_formation_type="line",
         target_obj="B",
         gnn_model_path=None,
+        search_type="switchback"
 ):
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
@@ -81,7 +82,7 @@ def run_pybullet_only_hike(
     # Theta = random.random() * 2 * np.pi
     Theta = 0
     Thetas = [0] + [0 for _ in range(num_drones - 1)]
-    Theta0s = [0] + [random.uniform(np.deg2rad(0), np.deg2rad(270)) for _ in range(num_drones - 1)] # init rotations for all tracking drones
+    Theta0s = [0] + [random.uniform(np.deg2rad(0), np.deg2rad(360)) for _ in range(num_drones - 1)] # init rotations for all tracking drones
     # Theta0s = [0 for _ in range(num_drones)]
     Theta_offset = 0 #random.choice([0.175 * np.pi, -0.175 * np.pi])
     
@@ -92,7 +93,7 @@ def run_pybullet_only_hike(
     width = - (num_drones / 4)
     for i in range(num_drones - 1):
         rel_drone_locs.append((width + x_offset, y_offset))
-        width += num_drones / 4
+        width += num_drones / 12
 
 
     print("REL DRONE LOCS: ", rel_drone_locs)
@@ -172,7 +173,8 @@ def run_pybullet_only_hike(
                                                        init_position=rel_drone_locs[i],
                                                        formation_type=drone_formation_type, 
                                                        goal_assignment=goal_assignment,
-                                                       gnn_model_path=gnn_model_path) 
+                                                       gnn_model_path=gnn_model_path,
+                                                       search_type=search_type) 
         else:
             drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), 
                                                    env=env, 
@@ -224,7 +226,7 @@ def run_pybullet_only_hike(
             if drone_models["0"].mode == "search":
                 # get lead drone image
                 rgb, _, seg = env._getDroneImages(0)
-                if i % (REC_EVERY_N_STEPS * 10) == 0:
+                if i % (REC_EVERY_N_STEPS * 2) == 0:
                     env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
                                     path=f'{sim_dir}/pics0_search',
@@ -241,7 +243,10 @@ def run_pybullet_only_hike(
                         drone_models[str(d)].receive_command()
                 else:
                     if drone_models["0"].prev_whale_count == 0:
-                        out[0] = drone_models["0"].search_step(i)
+                        if search_type == "spiral":
+                            out[0] = drone_models["0"].search_spiral()
+                        else:
+                            out[0] = drone_models["0"].search_step(i)
                     else:
                         out[0], _ = drone_models["0"].get_whales_center(seg, rgb)
 
@@ -354,12 +359,16 @@ def run_pybullet_only_hike(
 
         if i % CTRL_EVERY_N_STEPS == 0:
             for d in range(num_drones):
+                if d == 0:
+                    target_rpy = [0, 0, 0]
+                else:
+                    target_rpy = states[d][7:10]
                 action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP, cur_pos=states[d][0:3],
                                             cur_quat=states[d][3:7],
                                             cur_vel=states[d][10:13],
                                             cur_ang_vel=states[d][13:16],
                                             target_pos=states[d][:3],  # same as the current position
-                                            target_rpy=states[d][7:10],  # keep current yaw
+                                            target_rpy=target_rpy,  # keep current yaw
                                             target_vel=out[d][:3],
                                             target_rpy_rates=np.array([0, 0, 0])
                                             )

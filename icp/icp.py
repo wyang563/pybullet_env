@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm
-import copy
+import random
 import matplotlib.pyplot as plt
 
 def plot_point_clouds(index, points1, points2, run_number):
@@ -79,8 +79,9 @@ def calc_all_box_distance(boxes1, boxes2, use_centers=False):
             else:
                 pairwise_corr_indices[i, j], pairwise_box_dists[i, j] = calc_pair_box_distance(boxes1[i], boxes2[j])
 
-    nearest_indices = np.argmin(pairwise_box_dists, axis=1)
-    # box_corr_row_ind, box_corr_col_ind = linear_sum_assignment(pairwise_box_dists)
+    #nearest_indices = np.argmin(pairwise_box_dists, axis=1)
+
+    """
     flat_corr_indices = np.zeros((num_boxes * 4), dtype=int)
     box_assign_dist = 0
     for i in range(num_boxes):
@@ -89,7 +90,23 @@ def calc_all_box_distance(boxes1, boxes2, use_centers=False):
         corner_map = pairwise_corr_indices[i, j]
         for c, corner_j in enumerate(corner_map):
             flat_corr_indices[i * 4 + c] = 4 * j + corner_j
-    return box_assign_dist, flat_corr_indices.ravel(), nearest_indices 
+    """
+    #print(nearest_indices.shape)
+    #return box_assign_dist, flat_corr_indices.ravel(), nearest_indices 
+    #print(flat_corr_indices.shape)
+
+    box_corr_row_ind, box_corr_col_ind = linear_sum_assignment(pairwise_box_dists)
+    box_assign_dist = 0
+    box_assign_dist = pairwise_box_dists[box_corr_row_ind, box_corr_col_ind]
+    flat_corr_indices = np.zeros((num_boxes * 4), dtype=int)
+    box_assign_dist = 0
+    for i in range(num_boxes):
+        j = box_corr_row_ind[i]
+        #box_assign_dist += pairwise_box_dists[i, j]
+        corner_map = pairwise_corr_indices[i, j]
+        for c, corner_j in enumerate(corner_map):
+            flat_corr_indices[i * 4 + c] = 4 * j + corner_j
+    return box_assign_dist, flat_corr_indices.ravel(), box_corr_row_ind
 
 def icp(A, B, max_iters=20, tolerance=0.0001, use_centers=False, outlier_sigma=2, run_number=0):
     assert A.shape == B.shape, "A and B must have the same shape"
@@ -148,28 +165,39 @@ def icp(A, B, max_iters=20, tolerance=0.0001, use_centers=False, outlier_sigma=2
 
 def rot_icp(A, B, use_centers=False):
     '''
-    Rotatet A by 90˚ increments, and return the correspondence indices with the lowest error
+    Rotatet A by many random increments, and return the correspondence indices with the lowest error
     '''
-    lowest_error = float('inf')
-    low_correspondence = None
-    low_transform = None
-    N = 32
-    for rot_theta in [360 / N * i for i in range(N)]:
-        R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
-        transformed_points = []
-        for box in A:
-            transformed_box = []
-            for point in box:
-                point_array = np.array(point)
-                transformed_point = np.dot(R, point_array)
-                transformed_box.append(transformed_point.tolist())
-            transformed_points.append(transformed_box)
+    N = 100
+    ll = 0
+    for _ in range(10):
+        lowest_error = float('inf')
+        low_correspondence = None
+        low_transform = None
+        for _ in range(N):
+            rot_theta = np.deg2rad(random.uniform(0, 360))
+            R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
+            transformed_points = []
+            for box in A:
+                transformed_box = []
+                for point in box:
+                    point_array = np.array(point)
+                    #print(R.shape, point_array.shape)
+                    transformed_point = np.dot(R, point_array)
+                    transformed_box.append(transformed_point.tolist())
+                transformed_points.append(transformed_box)
 
-        T, corr_indices, error = icp(np.array(transformed_points), B, use_centers=use_centers, run_number=rot_theta)        
-        if error < lowest_error:
-            lowest_error = error 
-            low_correspondence = corr_indices
-            low_transform = T
+            T, corr_indices, error = icp(np.array(transformed_points), B, use_centers=use_centers, run_number=rot_theta)        
+            if error < lowest_error:
+                lowest_error = error 
+                low_correspondence = corr_indices
+                low_transform = T
+
+        if len(set(low_correspondence)) == len(low_correspondence):
+            return low_transform, low_correspondence, lowest_error
+        else:
+            ll+=1
+            print("look",ll)
+
     return low_transform, low_correspondence, lowest_error 
 
 if __name__ == "__main__":

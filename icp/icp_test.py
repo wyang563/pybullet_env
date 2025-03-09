@@ -1,9 +1,10 @@
-from simulator.icp import rot_icp, icp
+from pybullet_env.icp.icp import rot_icp, icp
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import random
 import json
+import sys
 
 def generate_random_rectangle(ax_aligned=True, grid_size=100):
     """
@@ -68,7 +69,7 @@ def generate_rectangles(n=5, grid_size=100):
     
     return rectangles
 
-def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2"):
+def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2", sim_dir=""):
     """
     Plots two sets of points side by side on a matplotlib plot with numerical labels.
 
@@ -88,7 +89,7 @@ def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2"):
         avg_x = np.mean(box_points[:, 0])
         avg_y = np.mean(box_points[:, 1])
         ax1.scatter(avg_x, avg_y, color='red')  # Plot the center point
-        ax1.text(float(avg_x), float(avg_y), str(corr[i]), fontsize=9, ha='center', va='bottom')  # Add numerical label
+        ax1.text(float(avg_x), float(avg_y), str(i), fontsize=9, ha='center', va='bottom')  # Add numerical label
     ax1.set_title(title1)
     ax1.set_xlabel("X")
     ax1.set_ylabel("Y")
@@ -102,7 +103,7 @@ def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2"):
         avg_x = np.mean(box_points[:, 0])
         avg_y = np.mean(box_points[:, 1])
         ax2.scatter(avg_x, avg_y, color='red')  # Plot the center point
-        ax2.text(float(avg_x), float(avg_y), str(i), fontsize=9, ha='center', va='bottom')  # Add numerical label
+        ax2.text(float(avg_x), float(avg_y), str(corr[i]), fontsize=9, ha='center', va='bottom')  # Add numerical label
     ax2.set_title(title2)
     ax2.set_xlabel("X")
     ax2.set_ylabel("Y")
@@ -110,7 +111,8 @@ def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2"):
     ax2.grid(True)
     ax2.set_aspect('equal', 'box')
 
-    plt.savefig(f"pybullet_env/simulator/icp_plots/plot_{index}.png")  # Save the plot to a file
+    # plt.savefig(sim_dir + f"/icp_plots/plot_{index}.png")  # Save the plot to a file
+    plt.savefig(f"pybullet_env/icp/icp_plots/plot_{index}.png")  # Save the plot to a file
     plt.close()
 
 def plot_transform(index, points1, points2, T):
@@ -128,12 +130,13 @@ def plot_transform(index, points1, points2, T):
     plt.legend()
     plt.grid(True)
     plt.axis('equal')
-    plt.savefig(f"pybullet_env/simulator/icp_plots/transform_plot_{index}.png")
+    plt.savefig(f"pybullet_env/icp/icp_plots/transform_plot_{index}.png")
     plt.close()
 
 def main():
-    os.makedirs("pybullet_env/simulator/icp_plots", exist_ok=True)
-    generate_points = True 
+    if not os.path.exists("pybullet_env/icp/icp_plots"):
+        os.makedirs("pybullet_env/icp/icp_plots")
+    generate_points = False 
     N = 5
     if generate_points:
         original_points = generate_rectangles()  
@@ -141,8 +144,10 @@ def main():
         points.append(original_points)
         for _ in range(N):
             rot_theta = np.deg2rad(random.uniform(-180, 180))
-            R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
+            # rot_theta = 0
+            # T = [0, 0]
             T = np.array([random.uniform(-50, 50), random.uniform(-50, 50)])
+            R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
             transformed_points = []
             for box in original_points:
                 transformed_box = []
@@ -150,34 +155,31 @@ def main():
                     point_array = np.array(point)
                     transformed_point = np.dot(R, point_array) + T
                     transformed_box.append(transformed_point.tolist())
+                random.shuffle(transformed_box)
                 transformed_points.append(transformed_box)
             random.shuffle(transformed_points)
             points.append(transformed_points)
     else:
-        with open("pybullet_env/simulator/points.json", "r") as f:
-            points = json.load(f)
-    net_corr = [i for i in range(5)] 
+        with open("pybullet_env/icp/sim_points_dataset.json", "r") as f:
+            data = json.load(f)
+            points = random.choice(data)
+
+    correlations = []
     for d in range(N):
         set1 = d
         set2 = (d + 1) % N
-        T, corr, error = rot_icp(np.array(points[set1]), np.array(points[set2]), use_centers=False)
-        corr = corr.tolist()
-        # invert correlation (right now correlation is B -> A)
-        inverse_corr = [0 for _ in range(len(corr))]
-        new_corr = [0 for _ in range(len(corr))]
-        for i in range(len(corr)):
-            inverse_corr[corr[i]] = i
-        for i in range(len(corr)):
-            new_corr[i] = inverse_corr[corr[i]]
-        net_corr = new_corr.copy()
-        plot_points(d, np.array(points[set1]), np.array(points[set2]), corr, title1=f"Set {set1}", title2=f"Set {set2}")
-    print("FINAL CORR: ", net_corr)
-    assert net_corr == [i for i in range(5)], "found net_corr: {}".format(net_corr) 
+        T, corr, _ = rot_icp(np.array(points[set2]), np.array(points[set1]))
+        correlations.append(corr)
+        # plot_points(d, np.array(points[set1]), np.array(points[set2]), corr, title1=f"Set {0}", title2=f"Set {set2}")
+    correlations.reverse()
+    composite = np.arange(5)
+    for corr in correlations:
+        composite = corr[composite] 
+    if composite.tolist() != [i for i in range(5)]:
+        print("FAILED: PLOTTING GRAPHS NOW")
+        return
+    print("PASSED")
 
 if __name__ == "__main__":
     for _ in range(50):
-        try:
-            main()
-        except Exception as e:
-            print("Error: ", e)
-            continue
+        main()        

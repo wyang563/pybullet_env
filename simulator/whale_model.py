@@ -1,11 +1,9 @@
-import socket
-import threading
 import pybullet as p
 import cv2
 import numpy as np
 from simulator.simulator_utils import *
 import csv
-from simulator.icp import rot_icp 
+from pybullet_env.icp.icp import rot_icp 
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm
 import dgl
@@ -13,6 +11,8 @@ import torch
 import networkx as nx
 from .gnn.models.modelv2 import NonLinearModel
 from .gnn.create_dataset import random_init, is_connected, create_graph
+from ..icp.icp_test import plot_points
+import json
 
 # IMPORTANT CONSTANTS FOR RECON SEARCH
 SEARCH_SPEED = 0.25
@@ -41,7 +41,7 @@ class WhaleDroneModel:
         self.debug_file = f"{sim_dir}/debug/drone_{self.drone_id}.csv"
         self.timestep = -1
         self.target_obj_index = -1 # uninitialized at start
-        self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position
+        self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position (global pixel coordinate of whale being targetted)
         self.num_whales = None # initialized in whale search stage once scout drone determines how many whales there are
 
     def set_other_drones(self, other_drones):
@@ -63,13 +63,12 @@ class WhaleDroneModel:
             return 0
         return (self.turn_target_yaw - cur_yaw) / YAW_STEP_RATE
     
-    def rotate_velocity(self, velocity):
-        velocity = np.array([velocity])
-        drone_yaw = self.env._getDroneStateVector(int(self.drone_id))[9]
-        rot_matrix = np.array([[np.cos(drone_yaw), -np.sin(drone_yaw)], 
-                               [np.sin(drone_yaw), np.cos(drone_yaw)]])
-        rot_velocity = rot_matrix @ velocity.T
-        return list(rot_velocity.T[0])
+    def rel_to_global(self, vec):
+        cur_yaw = self.env._getDroneStateVector(int(self.drone_id))[9]
+        rot_matrix = np.array([[np.cos(-cur_yaw), -np.sin(-cur_yaw)], 
+                               [np.sin(-cur_yaw), np.cos(-cur_yaw)]])
+        global_vec = np.dot(rot_matrix, np.array(vec))
+        return global_vec
 
     ## Image Processing/Position Update 
 
@@ -105,7 +104,7 @@ class WhaleDroneModel:
 
             rect = cv2.minAreaRect(object_pixels[:, ::-1])  
             box = cv2.boxPoints(rect) 
-            boxes.append(box)
+            boxes.append(box.tolist())
 
         # Generate a color mapping for each component
         if np.max(labels_im) > 0:
@@ -153,12 +152,12 @@ class WhaleDroneModel:
         m, n = img_dims[0], img_dims[1]
         x, y = pixel_coord
         dx, dy = -x + m/2, y - n/2
+        # prevent divide by zero errors
+        if dx ** 2 + dy ** 2 < 1e-7:
+            return [0, 0, 0, 0]
         incr_constant = np.sqrt(WHALE_TRACK_SPEED ** 2 / (dx ** 2 + dy ** 2))
         # rotate velocity according to drone's current orientation
-        cur_yaw = self.env._getDroneStateVector(int(self.drone_id))[9]
-        rot_matrix = np.array([[np.cos(-cur_yaw), -np.sin(-cur_yaw)], 
-                               [np.sin(-cur_yaw), np.cos(-cur_yaw)]])
-        dy, dx = np.dot(rot_matrix, np.array([dy, dx]))
+        dx, dy = self.rel_to_global([dx, dy])
         return [dy * incr_constant, dx * incr_constant, 0, 0]
 
     def get_whale_center_list(self, seg, rgb):
@@ -205,7 +204,7 @@ class WhaleDroneModel:
 
     # tracking stage functions
     def check_centered(self, target_center, img_shape):
-        return (target_center[0] - img_shape[0] // 2)**2 + (target_center[1] - img_shape[1] // 2)**2 < 10
+        return (target_center[0] - img_shape[0] // 2)**2 + (target_center[1] - img_shape[1] // 2)**2 < 100
 
     # track whale and return velocity to reach whale (based off order of whales along the x-axis)
     def track_whale(self, seg, rgb):
@@ -233,11 +232,12 @@ class WhaleDroneModel:
         min_dist = float('inf')
         target_center = whale_centers[0]
         for center in whale_centers:
-            dist = np.linalg.norm(np.array(center) - np.array(self.prev_target_pixel_pos))
+            # convert center to global coordination position
+            dist = np.linalg.norm(self.rel_to_global(center) - np.array(self.prev_target_pixel_pos))
             if dist < min_dist:
                 min_dist = dist
-                target_center = center
-        self.prev_target_pixel_pos = target_center
+                target_center = center 
+        self.prev_target_pixel_pos = self.rel_to_global(target_center)
         return self.pixel_to_world_velocity(target_center, seg.shape) 
 
     # landing logic
@@ -308,12 +308,8 @@ class WhaleDroneModel:
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
-    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment, gnn_model_path):
+    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment, gnn_model_path, search_type):
         super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, lead_drone=lead_drone)
-        self.search_state = 0 # 0: flying (1, 1), 1: flying -x direction, 2: flying x direction, 3: flying vertically, 4: turning
-        self.spiral_initialized = False
-        self.start_vertical_timestep = 0 # timestep when drone starts moving vertically
-        self.start_turning_timestep = 0
         self.target_y = 0
         self.init_velocity = [(9.0 - init_position[0]) / 24, (9 - init_position[1]) / 24, 0, 0]
         self.search_target_points = [] # (dx, dy) for the positions that each tagging drone should be at relative to search drone before tracking commences
@@ -325,6 +321,19 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             self.gnn_model.load_state_dict(torch.load(gnn_model_path))
             # self.gnn_model.load_state_dict(torch.load("pybullet_env/simulator/gnn/models/5agents_5goals_100epochs_2025-03-01_22-03-39/best.pt"))
             self.gnn_model.eval()
+        if search_type == "spiral":
+            # spiral search parameters
+            start_radius = 3
+            growth_rate = 3
+            num_points = 50 
+            num_turns = 4
+            self.spiral_points = self.generate_spiral(start_radius, growth_rate, num_points, num_turns)
+            self.target_point = 0 # index of target point in spiral_points drone should go to
+            self.search_state = None
+        else:
+            self.search_state = 0 # 0: flying (1, 1), 1: flying -x direction, 2: flying x direction, 3: flying vertically, 4: turning
+            self.start_vertical_timestep = 0 # timestep when drone starts moving vertically
+            self.start_turning_timestep = 0
             
     def stop_turn(self, timestep):
         # adjust currrent yaw to be 0
@@ -338,6 +347,22 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             print("FINISHED TURNING: ", timestep)
         return (-cur_yaw) / 20
     
+    def generate_spiral(self, start_radius, growth_rate, num_points, num_turns):
+        theta = np.linspace(0, 2 * np.pi * num_turns, num_points)
+        radius = start_radius + growth_rate * theta  # Radius increases with theta
+        
+        x = radius * np.cos(theta)
+        y = radius * np.sin(theta)
+        
+        return x, y
+
+    def search_spiral(self):
+        x, y = self.get_drone_state()[:2]
+        if np.linalg.norm(np.array([x, y]) - np.array([self.spiral_points[0][self.target_point], self.spiral_points[1][self.target_point]])) < 0.05:
+            self.target_point += 1
+            if self.target_point == len(self.spiral_points):
+                self.target_point = 0
+        return self.calc_velocity_to_point([self.spiral_points[0][self.target_point], self.spiral_points[1][self.target_point]])
 
     def search_step(self, timestep):
         '''
@@ -474,12 +499,12 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         between each whale and drone to then be used for goal assignment
         '''
         all_whale_boxes = []
-        net_corr = [i for i in range(self.num_drones - 1)] # mapping from drone 1 positions to drone x positions aggregatively
+        correlations = []
         for d in range(1, self.num_drones):
             rgb1, _, seg1 = self.env._getDroneImages(d)
 
             # save whale image
-            cv2.imwrite(self.sim_dir + f"/pics{d}_track/icp_whale_image_{self.timestep}.png", rgb1)
+            cv2.imwrite(self.sim_dir + f"/icp_plots/drone_{d}_icp_whale_image.png", rgb1)
             if d + 1 == self.num_drones:
                 rgb2, _, seg2 = self.env._getDroneImages(1)
             else:
@@ -493,28 +518,49 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 print(f"Different number of whales detected at index {d}, centers 1: {whale_centers1}, centers 2: {whale_centers2}")
                 return False, None, None, None
 
-            _, corr, _ = rot_icp(np.array(whale_boxes1), np.array(whale_boxes2), use_centers=True)
+            _, corr, _ = rot_icp(np.array(whale_boxes2), np.array(whale_boxes1))
 
-            # calculate net correspondence
-            corr = corr.tolist()
-            # invert correlation (right now correlation is B -> A)
-            inverse_corr = [0 for _ in range(len(corr))]
-            new_corr = [0 for _ in range(len(corr))]
-            for i in range(len(corr)):
-                inverse_corr[corr[i]] = i
-            for i in range(len(corr)):
-                new_corr[i] = inverse_corr[corr[i]]
-            net_corr = new_corr.copy()
+            correlations.append(corr)
 
             # append all whale boxes to list with boxes repermuted according to 1st image label number
-            all_whale_boxes.append([whale_boxes1[p] for p in net_corr])
-            
-        # check the mapping is the identity at the end
-        if list(net_corr) != [i for i in range(self.num_drones - 1)]:
-            print("net correlation was not the identity mapping: ", net_corr)
-            return False, None, None, None
-        print("ICP whale consensus succesful!")
+            all_whale_boxes.append(whale_boxes1)
+
+        # calculate net correlations
+        net_corrs = [] # net_corrs[i] is the mapping from point cloud i to point cloud 0
+        for i in range(len(correlations)):
+            composite = np.arange(len(correlations[i]))
+            for j in range(i, -1, -1):
+                composite = correlations[j][composite]
+            net_corrs.append(composite.copy())
         
+        front = net_corrs.pop()
+        net_corrs.insert(0, front)
+         
+        # store points in json
+        with open("pybullet_env/simulator/sim_points_dataset.json", "r") as f:
+            points = json.load(f)
+
+        points.append(all_whale_boxes)
+        with open("pybullet_env/simulator/sim_points_dataset.json", "w") as f:
+            json.dump(points, f, indent=4)
+
+        # check the mapping is the identity at the end
+        if net_corrs[0].tolist() != [i for i in range(self.num_drones - 1)]:
+            print("final net correlation was not the identity mapping: ", net_corrs[0])
+            return False, None, None, None
+        
+        # reshuffle all_whale_boxes
+        for i in range(len(all_whale_boxes)):
+            corr = net_corrs[i]
+            all_whale_boxes[i] = [all_whale_boxes[i][corr[j]] for j in range(len(all_whale_boxes[i]))]
+
+        print("ICP whale consensus succesful!")
+        # debugging, plot correlations for all_whale_boxes        
+        for i in range(self.num_drones - 1):
+            A_points = all_whale_boxes[i % (self.num_drones - 1)] 
+            B_points = all_whale_boxes[(i + 1) % (self.num_drones - 1)] 
+            plot_points(i, np.array(A_points), np.array(B_points), [i for i in range(self.num_drones - 1)], sim_dir=self.sim_dir)
+
         # nearest neighbor for whichever point is closest to a given whale
         drone_to_whale_dists = np.zeros((self.num_drones - 1, len(all_whale_boxes)))  
         center_pixel = np.array([rgb1.shape[0] // 2, rgb1.shape[1] // 2])
@@ -587,7 +633,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         assert pred.shape[0] == edges[0].shape[0]
         
         # Combine edge index tensors into a single tensor of shape (#edges, 2)
-        # edges[0] are the agent indices and edges[1] are the goal indices.
+        # edges[0] are the agent Zindices and edges[1] are the goal indices.
         edges_tensor = torch.stack((edges[0], edges[1]), dim=1)
         
         # Create an empty assignment matrix of shape (nAgents, nGoals)
@@ -625,13 +671,14 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         # normalize cost matrix
         cost_matrix = cost_matrix / np.max(cost_matrix) * 4 
         graph = self.construct_graph(cost_matrix, attr_dim)
+        assignments = []
+        while len(assignments) != nAgents:
+            with torch.no_grad():
+                self.visualize_dgl_graph(graph)
+                pred, edges = self.gnn_model(graph)
+                assignments = self.get_assignment_from_pred(edges, pred, nAgents, nGoals)
 
-        with torch.no_grad():
-            self.visualize_dgl_graph(graph)
-            pred, edges = self.gnn_model(graph)
-            assignments = self.get_assignment_from_pred(edges, pred, nAgents, nGoals)
         print("GNN assignments: ", assignments)
-        assert len(set(assignments)) == nAgents, "GNN did not assign all agents to unique goals"
         velocity_vecs = []
         target_pixels = []
         for i in range(self.num_drones - 1):
@@ -662,12 +709,30 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             target_pixels.append(target_pixel)
             velocity_vecs.append(self.pixel_to_world_velocity(target_pixel, rgb_shape)) # for some reason target pixel index values need to be swapped
 
-        # draw target pixels to debug image
-        for d in range(1, self.num_drones):
+        # Create a single figure with subplots for each drone
+        _, axes = plt.subplots(1, self.num_drones - 1, figsize=(5 * (self.num_drones - 1), 5))
+
+        if self.num_drones - 1 == 1:
+            # If there's only one drone, put axes in a list for consistency when indexing
+            axes = [axes]
+
+        for idx, d in enumerate(range(1, self.num_drones)):
+            # Get the RGB image for drone d
             rgb, _, _ = self.env._getDroneImages(d)
-            self.other_drones[str(d)].prev_target_pixel_pos = target_pixels[d - 1]
-            cv2.circle(rgb, (int(target_pixels[d - 1][1]), int(target_pixels[d - 1][0])), 2, (0, 0, 0), -1)
-            cv2.imwrite(self.sim_dir + f"/center_pics{d}/icp_targets/target_pixels_{self.timestep}.png", rgb) 
+            self.other_drones[str(d)].prev_target_pixel_pos = target_pixels[idx]
+            # Draw the target pixel (circle) on the drone's image
+            cv2.circle(rgb, (int(target_pixels[idx][1]), int(target_pixels[idx][0])), 5, (0, 0, 0), -1)
+            
+            # Convert BGR to RGB for plotting with matplotlib
+            rgb_plot = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+            axes[idx].imshow(rgb_plot)
+            axes[idx].set_title(f"Drone {d} Target Pixel")
+            axes[idx].axis('off')
+
+        plt.tight_layout()
+        # Save one combined image with subplots
+        plt.savefig(f"{self.sim_dir}/icp_plots/all_target_pixels_{self.timestep}.png")
+        plt.close()
         return True, velocity_vecs, target_pixels
 
     # send command to specific drone

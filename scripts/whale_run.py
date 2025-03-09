@@ -15,7 +15,7 @@ import math
 def generate_random_points(n,
                            min_range=4.0,
                            max_range=10.0,
-                           min_dist=0.75,
+                           min_dist=0.4,
                            max_dist=2,
                            max_attempts=50000):
 
@@ -49,10 +49,7 @@ def generate_trajectories(config):
     if config["use_fixed_locs"]:
         assert len(config["fixed_obj_locs"]) == num_objects, "Number of fixed locations should match number of objects"
         return objects, config["fixed_obj_locs"]
-    if config["debug"]:
-        locations_rel = generate_random_points(num_objects, min_range=2.0, max_range=7.0) 
-    else:
-        locations_rel = generate_random_points(num_objects) 
+    locations_rel = generate_random_points(num_objects, min_range=config["min_range"], max_range=config["max_range"]) 
     return objects, locations_rel
 
 def process_videos(output_folders):
@@ -126,4 +123,5 @@ if __name__ == "__main__":
                            drone_formation_type=formation_type,
                            target_obj=config['object_type'],
                            gnn_model_path=config['gnn_model_path'],
+                           search_type=config['search_type'],
                            )
