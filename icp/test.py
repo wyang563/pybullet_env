@@ -1,8 +1,18 @@
 import numpy as np
 
-box1 = np.array([[1, 1], [4, 4], [0, 1], [2, 3]])
-box2 = np.array([[2, 2], [5, 5], [1, 2], [3, 4]])
+correlations = [[4, 3, 1, 2, 0], [3, 4, 0, 1, 2], [1, 4, 0, 3, 2]]    
 
-center1 = np.mean(box1, axis=0)
-center2 = np.mean(box2, axis=0)
-print(center1, center2)
+net_corrs = [] # net_corrs[i] is the mapping from point cloud i to point cloud 0
+
+for i in range(len(correlations)):
+    composite = np.arange(len(correlations[i]))
+    for j in range(i, -1, -1):
+        new_composite = np.zeros(len(composite), dtype=int)
+        for k in range(len(composite)):
+            new_composite[correlations[j][k]] = composite[k]
+        composite = new_composite.copy()
+    net_corrs.append(composite)
+
+print(net_corrs)
+
+

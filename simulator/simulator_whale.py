@@ -9,6 +9,7 @@ import pandas as pd
 import pybullet as p
 import matplotlib.pyplot as plt
 from tqdm import trange
+import cv2
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ImageType
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
@@ -185,7 +186,7 @@ def run_pybullet_only_hike(
     for i in range(num_drones):
         drone_models[str(i)].set_other_drones(drone_models)
 
-    env.IMG_RES = np.array([256, 144])
+    env.IMG_RES = np.array([256, 256])
 
     #### Initialize the controllers ############################
     if drone in [DroneModel.CF2X, DroneModel.CF2P]:
@@ -229,7 +230,7 @@ def run_pybullet_only_hike(
                 if i % (REC_EVERY_N_STEPS * 2) == 0:
                     env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
-                                    path=f'{sim_dir}/pics0_search',
+                                    path=f'{sim_dir}/pics0_track',
                                     frame_num=int(i / CTRL_EVERY_N_STEPS),
                                     )
 
@@ -285,11 +286,12 @@ def run_pybullet_only_hike(
                         drone_models[str(d)].mode = "tracking"
 
             # tracking mode
-            elif drone_models[str(0)].mode == "tracking":
+            elif drone_models["0"].mode == "tracking":
                 # get drone images
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
                     if i % (REC_EVERY_N_STEPS * 10) == 0:
+                        # plot target point in pixel image
                         env._exportImage(img_type=ImageType.RGB,
                                         img_input=rgb,
                                         path=f'{sim_dir}/pics{d}_track',
@@ -334,7 +336,22 @@ def run_pybullet_only_hike(
                         elif drone_models[str(d)].mode in ["tracking", "centered"]:
                             if goal_assignment in ["icp", "gnn"] and done_assignments:
                                 out[d] = drone_models[str(d)].track_whale_prev_center(seg, rgb) 
-                                if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(drone_models[str(d)].prev_target_pixel_pos, seg.shape):
+                                target_pixel = drone_models[str(d)].prev_target_pixel_pos
+                                target_pixel = drone_models[str(d)].rotate_pixel(target_pixel, rgb.shape, to_global=False)
+                                # plot target pixel
+                                rgb, _, seg = env._getDroneImages(d) 
+                                if target_pixel is not None:
+                                    target_pixel = drone_models[str(d)].rotate_pixel(target_pixel, rgb.shape, to_global=False)
+                                    px, py = int(target_pixel[0]), int(target_pixel[1])
+                                    cv2.circle(rgb, (py, px), 5, (0, 0, 0), -1)
+                                    cv2.putText(rgb, "target", (py, px), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                                    env._exportImage(img_type=ImageType.RGB,
+                                        img_input=rgb,
+                                        path=f'{sim_dir}/pics{d}_track',
+                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                    )
+
+                                if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(target_pixel, rgb.shape):
                                     drone_models[str(d)].mode = "centered"
                                     print(f"Drone {d} is centered on whale: switching to centered mode")
                             else:            
@@ -362,7 +379,7 @@ def run_pybullet_only_hike(
                 if d == 0:
                     target_rpy = [0, 0, 0]
                 else:
-                    target_rpy = states[d][7:10]
+                    target_rpy = INIT_RPYS[d] 
                 action[str(d)], _, _ = ctrl[d].computeControl(control_timestep=CTRL_EVERY_N_STEPS * env.TIMESTEP, cur_pos=states[d][0:3],
                                             cur_quat=states[d][3:7],
                                             cur_vel=states[d][10:13],
@@ -386,7 +403,7 @@ def run_pybullet_only_hike(
                     x, y = pos[0], pos[1]
                     p.resetBasePositionAndOrientation(obj, [x+fx*fx_sign, y+fy*fy_sign, pos[2]], orn)
 
-            # plot path on grid
+            # store debug data to csvs
             if i % (CTRL_EVERY_N_STEPS * 100) == 0:
                 for d in range(num_drones):
                     with open(sim_dir + f'/state{d}.csv', mode='a') as state_file:
@@ -437,6 +454,8 @@ def run_pybullet_only_hike(
                 plt.ylabel("Y")
                 plt.title("Drone Paths")
                 plt.legend()
+
+                plt.gca().set_aspect('equal', adjustable='box')
                 
                 # Save and close
                 plt.savefig(os.path.join(sim_dir, "all_drones_paths.jpg"), dpi=300)

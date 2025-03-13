@@ -69,7 +69,7 @@ def generate_rectangles(n=5, grid_size=100):
     
     return rectangles
 
-def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2", sim_dir=""):
+def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2", sim_dir="pybullet_env/icp/icp_plots"):
     """
     Plots two sets of points side by side on a matplotlib plot with numerical labels.
 
@@ -111,8 +111,7 @@ def plot_points(index, points1, points2, corr, title1="Set 1", title2="Set 2", s
     ax2.grid(True)
     ax2.set_aspect('equal', 'box')
 
-    # plt.savefig(sim_dir + f"/icp_plots/plot_{index}.png")  # Save the plot to a file
-    plt.savefig(f"pybullet_env/icp/icp_plots/plot_{index}.png")  # Save the plot to a file
+    plt.savefig(sim_dir + f"/plot_{index}.png")  # Save the plot to a file
     plt.close()
 
 def plot_transform(index, points1, points2, T):
@@ -136,8 +135,9 @@ def plot_transform(index, points1, points2, T):
 def main():
     if not os.path.exists("pybullet_env/icp/icp_plots"):
         os.makedirs("pybullet_env/icp/icp_plots")
-    generate_points = False 
-    N = 5
+    generate_points = True 
+    N = 2
+    num_whales = 5
     if generate_points:
         original_points = generate_rectangles()  
         points = []
@@ -160,26 +160,30 @@ def main():
             random.shuffle(transformed_points)
             points.append(transformed_points)
     else:
-        with open("pybullet_env/icp/sim_points_dataset.json", "r") as f:
-            data = json.load(f)
-            points = random.choice(data)
+        # runs = os.listdir("pybullet_env/icp/sim_data")
+        run = f"run_47" # toggle this value for custom tests
+        print("Running test on:", run)
+        with open(f"pybullet_env/icp/sim_data/{run}/points.json", "r") as f:
+            points = json.load(f)
+            N = len(points)
+            num_whales = len(points[0])
 
     correlations = []
     for d in range(N):
         set1 = d
         set2 = (d + 1) % N
-        T, corr, _ = rot_icp(np.array(points[set2]), np.array(points[set1]))
+        T, corr, _ = rot_icp(np.array(points[set2]), np.array(points[set1]), N=50, use_point=False)
         correlations.append(corr)
-        # plot_points(d, np.array(points[set1]), np.array(points[set2]), corr, title1=f"Set {0}", title2=f"Set {set2}")
+        # plot_points(d, np.array(points[set1]), np.array(points[set2]), corr, title1=f"Set {set1}", title2=f"Set {set2}")
     correlations.reverse()
-    composite = np.arange(5)
+    composite = np.arange(num_whales)
     for corr in correlations:
         composite = corr[composite] 
-    if composite.tolist() != [i for i in range(5)]:
-        print("FAILED: PLOTTING GRAPHS NOW")
+    if composite.tolist() != [i for i in range(num_whales)]:
+        print("FAILED")
         return
     print("PASSED")
 
 if __name__ == "__main__":
-    for _ in range(50):
-        main()        
+    # for _ in range(20):
+    main()        

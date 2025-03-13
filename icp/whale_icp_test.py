@@ -69,10 +69,13 @@ if __name__ == "__main__":
     model = YOLO("pybullet_env/icp/whale_data/last.pt")
     run_name = f"yolorun_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     
-    index = 2000 
-    img_1_path = video_1_prefix + f"{index}.jpg"
+    index = 1200 
+    img_1_path = video_2_prefix + f"{index}.jpg"
     img_1 = cv2.imread(img_1_path)
     height, width = img_1.shape[:2]
+
+    img_2_path = video_2_prefix + f"{index + 200}.jpg"
+    img_2 = cv2.imread(img_2_path)
 
     # Crop the center 2000x2000 portion
     crop_size = 2300
@@ -82,17 +85,15 @@ if __name__ == "__main__":
     x2 = min(width, center_x + crop_size // 2)
     y2 = min(height, center_y + crop_size // 2)
     img_1 = img_1[y1:y2, x1:x2]
-
-    # Rotate img_1 by 90 degrees to get img_2
-    img_2 = cv2.rotate(img_1, cv2.ROTATE_90_CLOCKWISE)
+    img_2 = img_2[y1:y2, x1:x2] 
 
     # Save the images
-    cv2.imwrite("pybullet_env/icp/cropped_img_1.jpg", img_1)
-    cv2.imwrite("pybullet_env/icp/rotated_img_2.jpg", img_2)
+    cv2.imwrite("pybullet_env/icp/img_1.jpg", img_1)
+    cv2.imwrite("pybullet_env/icp/img_2.jpg", img_2)
 
     with torch.no_grad():
-        img_1_path = "pybullet_env/icp/cropped_img_1.jpg"
-        img_2_path = "pybullet_env/icp/rotated_img_2.jpg"
+        img_1_path = "pybullet_env/icp/img_1.jpg"
+        img_2_path = "pybullet_env/icp/img_2.jpg"
         results = model(source=[img_1_path, img_2_path],
                         conf=0.45,
                         imgsz=640,
@@ -118,8 +119,12 @@ if __name__ == "__main__":
             vid1_boxes = vid1_boxes[:-diff]
         elif num_boxes2 > num_boxes1:
             vid2_boxes = vid2_boxes[:-diff]
-        
-        _, corr, _ = rot_icp(vid1_boxes, vid2_boxes)
+
+        # get centers of boxes
+        # vid1_centers = np.mean(vid1_boxes, axis=1)
+        # vid2_centers = np.mean(vid2_boxes, axis=1)
+
+        _, corr, _ = rot_icp(vid2_boxes, vid1_boxes, use_point=False)
 
     # plot results
     plot_boxed_images(img_1_path, vid1_boxes, img_2_path, vid2_boxes, corr, save_path="pybullet_env/icp/icp_plots/boxed_plot.png")
