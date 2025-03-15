@@ -39,6 +39,7 @@ DEFAULT_PARAMS_PATH = None
 DEFAULT_CHECKPOINT_PATH = None
 POINT_CLOUD_REGISTRATION = False
 DEFAULT_MOVE_WHALES = False
+VIDEO_FREQ = 10 # Hz for taking frames for video
 
 SCOUT_H = 7.0
 H = 5.0
@@ -227,7 +228,7 @@ def run_pybullet_only_hike(
             if drone_models["0"].mode == "search":
                 # get lead drone image
                 rgb, _, seg = env._getDroneImages(0)
-                if i % (REC_EVERY_N_STEPS * 2) == 0:
+                if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
                     env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
                                     path=f'{sim_dir}/pics0_track',
@@ -254,7 +255,7 @@ def run_pybullet_only_hike(
             elif drone_models["0"].mode == "whales":
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
-                    if i % (REC_EVERY_N_STEPS * 10) == 0:
+                    if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
                         env._exportImage(img_type=ImageType.RGB,
                                         img_input=rgb,
                                         path=f'{sim_dir}/pics{d}_track',
@@ -290,13 +291,20 @@ def run_pybullet_only_hike(
                 # get drone images
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
-                    if i % (REC_EVERY_N_STEPS * 10) == 0:
+                    if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
                         # plot target point in pixel image
-                        env._exportImage(img_type=ImageType.RGB,
-                                        img_input=rgb,
-                                        path=f'{sim_dir}/pics{d}_track',
-                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                        )
+                        target_pixel = drone_models[str(d)].prev_target_pixel_pos
+
+                        # plot target pixel
+                        if target_pixel is not None:
+                            px, py = int(target_pixel[0]), int(target_pixel[1])
+                            cv2.circle(rgb, (py, px), 5, (0, 0, 0), -1)
+                            cv2.putText(rgb, "target", (py, px), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                            env._exportImage(img_type=ImageType.RGB,
+                                img_input=rgb,
+                                path=f'{sim_dir}/pics{d}_track',
+                                frame_num=int(i / CTRL_EVERY_N_STEPS),
+                            )
 
                     if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
                         # ICP case
@@ -337,19 +345,19 @@ def run_pybullet_only_hike(
                             if goal_assignment in ["icp", "gnn"] and done_assignments:
                                 out[d] = drone_models[str(d)].track_whale_prev_center(seg, rgb) 
                                 target_pixel = drone_models[str(d)].prev_target_pixel_pos
-                                target_pixel = drone_models[str(d)].rotate_pixel(target_pixel, rgb.shape, to_global=False)
+
                                 # plot target pixel
-                                rgb, _, seg = env._getDroneImages(d) 
-                                if target_pixel is not None:
-                                    target_pixel = drone_models[str(d)].rotate_pixel(target_pixel, rgb.shape, to_global=False)
-                                    px, py = int(target_pixel[0]), int(target_pixel[1])
-                                    cv2.circle(rgb, (py, px), 5, (0, 0, 0), -1)
-                                    cv2.putText(rgb, "target", (py, px), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                                    env._exportImage(img_type=ImageType.RGB,
-                                        img_input=rgb,
-                                        path=f'{sim_dir}/pics{d}_track',
-                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                    )
+                                # if target_pixel is not None:
+                                #     rgb, _, seg = env._getDroneImages(d) 
+                                    # target_pixel = drone_models[str(d)].rotate_pixel(target_pixel, rgb.shape, to_global=False)
+                                    # px, py = int(target_pixel[0]), int(target_pixel[1])
+                                    # cv2.circle(rgb, (py, px), 5, (0, 0, 0), -1)
+                                    # cv2.putText(rgb, "target", (py, px), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                                    # env._exportImage(img_type=ImageType.RGB,
+                                    #     img_input=rgb,
+                                    #     path=f'{sim_dir}/pics{d}_track',
+                                    #     frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                    # )
 
                                 if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(target_pixel, rgb.shape):
                                     drone_models[str(d)].mode = "centered"

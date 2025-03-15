@@ -87,7 +87,7 @@ class WhaleDroneModel:
     def world_rel_to_pixel(self, world_coord, img_shape):
         # also assumes drone is at origin of image
         m, n = img_shape[0], img_shape[1]
-        return [round(-world_coord[1] + m/2), round(world_coord[0] + n/2)]
+        return [-world_coord[1] + m/2, world_coord[0] + n/2]
     
     def pixel_to_origin(self, pixel_coord, img_dims):
         # assumes bottom left corner is origin, cv2 img coords with (x = horizontal, y = vertical)
@@ -103,13 +103,14 @@ class WhaleDroneModel:
     
     def rotate_pixel(self, pixel_coord, img_dims, to_global=True):
         yaw = self.env._getDroneStateVector(int(self.drone_id))[9]
+        print("drone ", self.drone_id, "Yaw: ", yaw)
         if to_global:
             yaw = -yaw
         world_rel_coord = self.pixel_to_world_rel(pixel_coord, img_dims)
         rot_matrix = np.array([[np.cos(yaw), -np.sin(yaw)],
                                [np.sin(yaw), np.cos(yaw)]])
-        new_world_rel_coord = np.dot(rot_matrix, np.array(world_rel_coord))
-        return self.world_rel_to_pixel(new_world_rel_coord, img_dims)
+        rotated_world_rel_coord = np.dot(rot_matrix, np.array(world_rel_coord))
+        return self.world_rel_to_pixel(rotated_world_rel_coord, img_dims)
 
     ## Image Processing/Position Update 
     def check_color(self, pixel):
@@ -123,7 +124,6 @@ class WhaleDroneModel:
         elif pixel[2] > 150 and pixel[0] < 60 and pixel[1] < 60:
             return True
         return False
-
 
     def segment_image(self, seg):
         '''
@@ -196,10 +196,13 @@ class WhaleDroneModel:
             count += int(self.check_color(rgb[int(x), int(y)]))
         return count >= self.num_whales
     
-    def pixel_to_world_velocity(self, pixel_coord, img_dims):
+    def pixel_to_world_velocity(self, pixel_coord, img_dims, cv2_coords=False):
         '''
         Drone is at center of image, get velocity to target pixel coordinate
         '''
+        if cv2_coords:
+            # have to invert coordinates since cv2 does x horizontal, y vertical axis
+            pixel_coord = [pixel_coord[1], pixel_coord[0]]
         m, n = img_dims[0], img_dims[1]
         x, y = pixel_coord
         dx, dy = -x + m/2, y - n/2
@@ -288,11 +291,15 @@ class WhaleDroneModel:
         target_center = whale_centers[0]
         for center in whale_centers:
             # convert center to global coordination position
-            dist = np.linalg.norm(center - np.array(self.rotate_pixel(self.prev_target_pixel_pos, rgb.shape, to_global=False)))
+            # print("Drone ", self.drone_id, " previous target center: ", self.rotate_pixel(self.prev_target_pixel_pos, rgb.shape, to_global=False))
+            # dist = np.linalg.norm(center - np.array(self.rotate_pixel(self.prev_target_pixel_pos, rgb.shape, to_global=False)))
+            dist = np.linalg.norm(center - np.array(self.prev_target_pixel_pos))
             if dist < min_dist:
                 min_dist = dist
                 target_center = center 
-        self.prev_target_pixel_pos = self.rotate_pixel(target_center, rgb.shape, to_global=True)
+        self.prev_target_pixel_pos = target_center
+        # self.prev_target_pixel_pos = self.rotate_pixel(target_center, rgb.shape, to_global=True)
+        # print("Drone ", self.drone_id, " TARGET CENTER: ", target_center)
         return self.pixel_to_world_velocity(target_center, seg.shape) 
 
     # landing logic
@@ -510,8 +517,8 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 self.search_target_points.append((dx, dy))
                 dx += search_width / (self.num_drones - 2)
         elif self.formation_type == "polygon":
-            search_radius = 0.3 
-            variance = 0.1 
+            search_radius = 0.6 
+            variance = 0.15 
             for i in range(self.num_drones - 1):
                 variance_dist = np.random.uniform(0, variance)
                 angle = 2 * np.pi * i / (self.num_drones - 1)
@@ -636,11 +643,6 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             all_whale_boxes[i] = [all_whale_boxes[i][corr[j]] for j in range(len(all_whale_boxes[i]))]
 
         print("ICP whale consensus succesful!")
-        # debugging, plot correlations for all_whale_boxes        
-        # for i in range(self.num_drones - 1):
-        #     A_points = all_whale_boxes[i % (self.num_drones - 1)] 
-        #     B_points = all_whale_boxes[(i + 1) % (self.num_drones - 1)] 
-        #     plot_points(i, np.array(A_points), np.array(B_points), [i for i in range(self.num_drones - 1)], sim_dir=self.sim_dir)
 
         # nearest neighbor for whichever point is closest to a given whale
         drone_to_whale_dists = np.zeros((self.num_drones - 1, len(all_whale_boxes)))  
@@ -674,15 +676,29 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         plt.savefig(out_file)
         plt.close()
 
-    def compute_comm_edges(self):
-        u_comm = []
-        v_comm = []
-        for i in range(self.num_drones - 1):
-            for j in range(self.num_drones - 1):
-                if j in [(i + k) % self.num_drones for k in range(self.num_drones - 1)]:
-                    u_comm.append(i)
-                    v_comm.append(j)
-        return torch.tensor(u_comm, dtype=torch.int32), torch.tensor(v_comm, dtype=torch.int32)
+    def compute_comm_edges(self, agentsPos):
+        nAgents = agentsPos.shape[1]
+        # Calculate the centroid of the agents' positions
+        centroid = torch.mean(agentsPos, dim=1)
+        
+        # Calculate the angles of each agent relative to the centroid
+        angles = torch.atan2(agentsPos[1] - centroid[1], agentsPos[0] - centroid[0])
+        
+        # Sort the agents by their angles
+        sorted_indices = torch.argsort(angles)
+        
+        # Create the edges for a ring communication graph based on the sorted order
+        u = torch.tensor([], dtype=torch.int32)
+        v = torch.tensor([], dtype=torch.int32)
+        for i in range(nAgents):
+            u = torch.cat((u, torch.tensor([sorted_indices[i]], dtype=torch.int32)))
+            v = torch.cat((v, torch.tensor([sorted_indices[(i + 1) % nAgents]], dtype=torch.int32)))
+
+            # add the opposite direction
+            u = torch.cat((u, torch.tensor([sorted_indices[(i + 1) % nAgents]], dtype=torch.int32)))
+            v = torch.cat((v, torch.tensor([sorted_indices[i]], dtype=torch.int32)))
+        
+        return u, v
 
     def construct_graph(self, cost_matrix, attr_dim=16):
         nAgents = self.num_drones - 1
@@ -691,7 +707,17 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         for i in range(1,nAgents):
             u = torch.cat((u,torch.tensor([i for _ in range(nAgents)])))
             v = torch.cat((v,torch.tensor([k for k in range(nAgents)])))
-        u_com,v_com = self.compute_comm_edges() 
+        
+        # calculate agent positions
+        x_coords = []
+        y_coords = []
+        for d in range(1, self.num_drones):
+            pos = self.other_drones[str(d)].get_drone_state()[:2]
+            x_coords.append(pos[0])
+            y_coords.append(pos[1])
+        agentsPos = torch.tensor([x_coords, y_coords])        
+
+        u_com,v_com = self.compute_comm_edges(agentsPos) 
         graph_data = {('agent', 'assigns', 'goal'): (u, v), ('goal', 'assigns', 'agent'): (v, u),('agent', 'communicates', 'agent'): (u_com, v_com)}
         graph = dgl.heterograph(graph_data,idtype=torch.int32)
         
@@ -744,13 +770,17 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         cost_matrix = cost_matrix / np.max(cost_matrix) 
         graph = self.construct_graph(cost_matrix, attr_dim)
         assignments = []
-        while len(assignments) != nAgents:
-            with torch.no_grad():
-                # self.visualize_dgl_graph(graph)
-                h, edges = self.gnn_model.forward(graph)
-                assignments = self.get_assigned_goals(h, edges)
+        with torch.no_grad():
+            # self.visualize_dgl_graph(graph)
+            h, edges = self.gnn_model.forward(graph)
+            assignments = self.get_assigned_goals(h, edges)
 
         print("GNN assignments: ", assignments)
+
+        # check that assignments are unique
+        assignment_list = [assignment[0] for assignment in assignments.values()] 
+        assert len(assignment_list) == len(set(assignment_list)), f"assignments must be unique, but got {assignment_list}"
+
         velocity_vecs = []
         target_pixels = []
         for i in range(self.num_drones - 1):
@@ -771,7 +801,9 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             # Get the RGB image for drone d
             rgb, _, _ = self.env._getDroneImages(d)
 
-            self.other_drones[str(d)].prev_target_pixel_pos = self.rotate_pixel(target_pixels[idx], rgb.shape, to_global=True)
+            target_pixel = [target_pixels[idx][1], target_pixels[idx][0]] # convert target pixel to numpy coordinates format
+            self.other_drones[str(d)].prev_target_pixel_pos = target_pixel
+            # self.other_drones[str(d)].prev_target_pixel_pos = self.rotate_pixel(target_pixels[idx], rgb.shape, to_global=True)
 
             # Draw correspondences
             for i, box in enumerate(all_whale_boxes[idx]):
@@ -820,7 +852,9 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             # Get the RGB image for drone d
             rgb, _, _ = self.env._getDroneImages(d)
 
-            self.other_drones[str(d)].prev_target_pixel_pos = self.rotate_pixel(target_pixels[idx], rgb.shape, to_global=True)
+            target_pixel = [target_pixels[idx][1], target_pixels[idx][0]] # convert target pixel to numpy coordinates format
+            self.other_drones[str(d)].prev_target_pixel_pos = target_pixel
+            # self.other_drones[str(d)].prev_target_pixel_pos = self.rotate_pixel(target_pixel, rgb.shape, to_global=True)
 
             # Draw correspondences
             for i, box in enumerate(all_whale_boxes[idx]):
@@ -828,7 +862,8 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 cv2.putText(rgb, str(i), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)
 
             # Draw the target pixel (circle) on the drone's image
-            cv2.circle(rgb, (int(target_pixels[idx][0]), int(target_pixels[idx][1])), 2, (0, 0, 0), -1)
+            # print("DRONE ", d, " ASSIGNED ICP TARGET PIXEL: ", target_pixel)
+            cv2.circle(rgb, (int(target_pixels[idx][0]), int(target_pixels[idx][1])), 3, (0, 0, 0), -1)
             
             # Convert BGR to RGB for plotting with matplotlib
             rgb_plot = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
