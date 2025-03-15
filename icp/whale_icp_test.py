@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import cv2
 import os
+import math
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -56,13 +57,16 @@ def plot_boxed_images(img_list, boxes_list, net_corrs, save_path=None):
         plt.savefig(save_path)
     plt.close()
 
-def rotate_image(img_file, rot_angle, save_dir):
+def rotate_image(img_file, rot_angle, save_dir, in_img=None):
     # Read the image from the specified directory
-    image = cv2.imread(os.path.join(save_dir, img_file))
-    if image is None:
-        print(f"Error: Unable to read image {os.path.join(save_dir, img_file)}")
-        return
-    
+    if in_img is None:
+        image = cv2.imread(os.path.join(save_dir, img_file))
+        if image is None:
+            print(f"Error: Unable to read image {os.path.join(save_dir, img_file)}")
+            return
+    else:
+        image = in_img 
+
     h, w = image.shape[:2]
     
     # Define region dimensions (width x height)
@@ -99,11 +103,88 @@ def rotate_image(img_file, rot_angle, save_dir):
     cv2.imwrite(save_file, new_image)
     print(f"Rotated image saved to {save_file}")
 
-def translate_image(image, x, y):
-    pass
+def translate_image(img_file, x, y, save_dir):
+    image = cv2.imread(save_dir + img_file) 
+    h, w = image.shape[:2]
+    
+    # Define the dimensions of the center region.
+    region_width = 1920
+    region_height = 1080
+    
+    # Calculate the center point.
+    center_x, center_y = w // 2, h // 2
+    
+    # Determine cropping boundaries for the center region.
+    x1 = max(0, center_x - region_width // 2)
+    x2 = min(w, center_x + region_width // 2)
+    y1 = max(0, center_y - region_height // 2)
+    y2 = min(h, center_y + region_height // 2)
+    
+    # Extract the center region.
+    region = image[y1:y2, x1:x2].copy()
+    
+    # Create the translation matrix.
+    # Note: cv2.warpAffine expects a 2x3 matrix: 
+    # [ [1, 0, x_translation], [0, 1, y_translation] ]
+    M = np.float32([[1, 0, x], [0, 1, y]])
+    
+    # Translate the region.
+    translated_region = cv2.warpAffine(region, M, (region.shape[1], region.shape[0]))
+    
+    # Create a copy of the original image and replace the center region with the translated region.
+    new_image = image.copy()
+    new_image[y1:y2, x1:x2] = translated_region
+    save_file = save_dir + f"translated_{x}_{y}" + img_file
+    cv2.imwrite(save_file, new_image)
+    return new_image
 
-def sheer_image(image, sheer_angle):
-    pass
+def shear_image(img_file, shear_angle, save_dir, in_img=None):
+    # Read the image
+    if in_img is None:
+        image = cv2.imread(os.path.join(save_dir, img_file))
+        if image is None:
+            print(f"Error: Unable to read image {os.path.join(save_dir, img_file)}")
+            return
+    else:
+        image = in_img 
+
+    h, w = image.shape[:2]
+
+    # Convert angle in degrees to a shear factor (tan of the angle)
+    shear_factor = math.tan(math.radians(shear_angle))
+
+    # Build the shear matrix.
+    # This applies a horizontal shear; pixels get shifted in x by an amount 
+    # proportional to their y-coordinate and the shear factor.
+    M = np.float32([
+        [1, shear_factor, 0],
+        [0, 1,          0]
+    ])
+
+    # Warp (sheer) the entire image; we use the original image size for output.
+    # Note: parts of the image may be clipped depending on the shear angle.
+    sheered_image = cv2.warpAffine(image, M, (w, h))
+
+    # Save the sheered image under a new name.
+    out_filename = f"sheered_{shear_angle}_{img_file}"
+    out_path = os.path.join(save_dir, out_filename)
+    cv2.imwrite(out_path, sheered_image)
+    print(f"Sheered image saved to {out_path}")
+
+def generate_augmentations(img_dir):
+    # CONFIG: TOGGLE FOR DIFFERENT AUGMENTATIONS
+    rotation_angle_range = [-180, 180]
+    translation_range = [-500, 500]
+    shear_angle_range = [-25, 25]
+
+    for img_file in os.listdir(img_dir):
+        translation = np.random.randint(translation_range[0], translation_range[1], size=2)
+        shear_angle = np.random.randint(shear_angle_range[0], shear_angle_range[1])
+        rotation_angle = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+        
+        translated_img = translate_image(img_file, translation[0], translation[1], img_dir)
+        rotate_image(img_file, rotation_angle, img_dir, in_img=translated_img)
+        shear_image(img_file, shear_angle, img_dir, in_img=translated_img)
 
 def calculate_box_plots():
     if not os.path.exists("pybullet_env/icp/icp_plots"):
@@ -214,4 +295,7 @@ def calculate_box_plots():
 if __name__ == "__main__":
     img_dir = "pybullet_env/icp/whale_data/icp_experiments/shot1/"
     img_file = "503_1688841618482_frame420.jpg"
-    rotate_image(img_file, 30, save_dir=img_dir)
+    # rotate_image(img_file, 180, save_dir=img_dir)
+    # translate_image(img_file, 100, 100, save_dir=img_dir)
+    # shear_image(img_file, 10, save_dir=img_dir)
+    generate_augmentations(img_dir)
