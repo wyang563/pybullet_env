@@ -442,7 +442,10 @@ def run_pybullet_only_hike(
                     y = data.iloc[:, 2]
                     
                     # Plot each drone's path on the same figure
-                    plt.plot(x, y, label=f"Drone {d} Path")
+                    if d == 0:                    
+                        plt.plot(x, y, label=f"Scout Drone Path")
+                    else:
+                        plt.plot(x, y, label=f"Tracking Drone {d} Path")
                 
                 # plot target path
                 if move_whales:
@@ -460,7 +463,7 @@ def run_pybullet_only_hike(
                 # Label, title, legend
                 plt.xlabel("X")
                 plt.ylabel("Y")
-                plt.title("Drone Paths")
+                # plt.title("Simulation Drone Paths")
                 plt.legend()
 
                 plt.gca().set_aspect('equal', adjustable='box')

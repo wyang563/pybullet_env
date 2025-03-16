@@ -387,11 +387,9 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             self.gnn_model.eval()
         if search_type == "spiral":
             # spiral search parameters
-            start_radius = 3
-            growth_rate = 3
-            num_points = 50 
-            num_turns = 4
-            self.spiral_points = self.generate_spiral(start_radius, growth_rate, num_points, num_turns)
+            diff_points = [[3, 0], [3, 3], [-3, 3], [-3, -3], [6, -3], [6, 6], [-6, 6], [-6, -6], [9, -6], [9, 9], [9, -9], [-9, -9]]
+            cur_x, cur_y = self.get_drone_state()[:2]
+            self.spiral_points = [[cur_x + target_point[0], cur_y + target_point[1]] for target_point in diff_points]
             self.target_point = 0 # index of target point in spiral_points drone should go to
             self.search_state = None
         else:
@@ -410,23 +408,14 @@ class WhaleDroneLeadModel(WhaleDroneModel):
                 self.start_vertical_timestep = timestep
             print("FINISHED TURNING: ", timestep)
         return (-cur_yaw) / 20
-    
-    def generate_spiral(self, start_radius, growth_rate, num_points, num_turns):
-        theta = np.linspace(0, 2 * np.pi * num_turns, num_points)
-        radius = start_radius + growth_rate * theta  # Radius increases with theta
-        
-        x = radius * np.cos(theta)
-        y = radius * np.sin(theta)
-        
-        return x, y
 
     def search_spiral(self):
         x, y = self.get_drone_state()[:2]
-        if np.linalg.norm(np.array([x, y]) - np.array([self.spiral_points[0][self.target_point], self.spiral_points[1][self.target_point]])) < 0.05:
+        if np.linalg.norm(np.array([x, y]) - np.array([self.spiral_points[self.target_point][0], self.spiral_points[self.target_point][1]])) < 0.05:
             self.target_point += 1
             if self.target_point == len(self.spiral_points):
                 self.target_point = 0
-        return self.calc_velocity_to_point([self.spiral_points[0][self.target_point], self.spiral_points[1][self.target_point]])
+        return self.calc_velocity_to_point([self.spiral_points[self.target_point][0], self.spiral_points[self.target_point][1]])
 
     def search_step(self, timestep):
         '''

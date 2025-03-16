@@ -15,8 +15,8 @@ import math
 def generate_random_points(n,
                            min_range=4.0,
                            max_range=10.0,
-                           min_dist=0.4,
-                           max_dist=2,
+                           min_dist=0.5,
+                           max_dist=2.5,
                            max_attempts=50000):
 
     points = []
