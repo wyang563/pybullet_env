@@ -15,9 +15,9 @@ from icp.icp_test import plot_points
 import json
 
 # IMPORTANT CONSTANTS FOR RECON SEARCH
-SEARCH_SPEED = 0.25
+SEARCH_SPEED = 0.4
 DEFAULT_SPEED = 0.12
-WHALE_TRACK_SPEED = 0.10
+WHALE_TRACK_SPEED = 0.1
 WHALE_CHECK_THRESHOLD = 50 # Number of iterations whale count is the same before switching to whales mode
 VERT_TIME = 2200
 TURN_TIME = 4800
@@ -41,6 +41,7 @@ class WhaleDroneModel:
         self.debug_file = f"{sim_dir}/debug/drone_{self.drone_id}.csv"
         self.timestep = -1
         self.target_obj_index = -1 # uninitialized at start
+        self.icp_whales_pixel_pos = None # for tracking ICP assignment numbers of whales
         self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position (global pixel coordinate of whale being targetted)
         self.num_whales = None # initialized in whale search stage once scout drone determines how many whales there are
 
@@ -289,17 +290,25 @@ class WhaleDroneModel:
         # get point closest to prev target point
         min_dist = float('inf')
         target_center = whale_centers[0]
+        
+        # assign new whale labels based off a linear sum assignment
+        cost_matrix = np.zeros((len(whale_centers), len(whale_centers)))
+        for i in range(len(self.icp_whales_pixel_pos)):
+            for j in range(len(whale_centers)):
+                cost_matrix[i][j] = np.linalg.norm(np.array(self.icp_whales_pixel_pos[i]) - np.array(whale_centers[j]))
+        _, col_ind = linear_sum_assignment(cost_matrix)
+        for i in range(len(self.icp_whales_pixel_pos)):
+            self.icp_whales_pixel_pos[i] = whale_centers[col_ind[i]]
+
         for center in whale_centers:
             # convert center to global coordination position
-            # print("Drone ", self.drone_id, " previous target center: ", self.rotate_pixel(self.prev_target_pixel_pos, rgb.shape, to_global=False))
             # dist = np.linalg.norm(center - np.array(self.rotate_pixel(self.prev_target_pixel_pos, rgb.shape, to_global=False)))
+            self.write_debug_file([str(center)])
             dist = np.linalg.norm(center - np.array(self.prev_target_pixel_pos))
             if dist < min_dist:
                 min_dist = dist
                 target_center = center 
         self.prev_target_pixel_pos = target_center
-        # self.prev_target_pixel_pos = self.rotate_pixel(target_center, rgb.shape, to_global=True)
-        # print("Drone ", self.drone_id, " TARGET CENTER: ", target_center)
         return self.pixel_to_world_velocity(target_center, seg.shape) 
 
     # landing logic
@@ -846,12 +855,14 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             # self.other_drones[str(d)].prev_target_pixel_pos = self.rotate_pixel(target_pixel, rgb.shape, to_global=True)
 
             # Draw correspondences
+            self.other_drones[str(d)].icp_whales_pixel_pos = []
             for i, box in enumerate(all_whale_boxes[idx]):
                 center = np.mean(box, axis=0)
+                self.other_drones[str(d)].icp_whales_pixel_pos.append([center[1], center[0]])
                 cv2.putText(rgb, str(i), (int(center[0]), int(center[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)
 
             # Draw the target pixel (circle) on the drone's image
-            # print("DRONE ", d, " ASSIGNED ICP TARGET PIXEL: ", target_pixel)
+            print("DRONE ", d, " ASSIGNED ICP TARGET PIXEL: ", target_pixel)
             cv2.circle(rgb, (int(target_pixels[idx][0]), int(target_pixels[idx][1])), 3, (0, 0, 0), -1)
             
             # Convert BGR to RGB for plotting with matplotlib

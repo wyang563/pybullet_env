@@ -96,10 +96,10 @@ def plot_boxed_images(img_list, boxes_list, net_corrs, save_path=None):
 
     plt.tight_layout(pad=0.03, w_pad=0.03, h_pad=0.03, rect=[0, 0, 1, 0.95])
     if save_path:
-        plt.savefig(save_path)
-    plt.close()
+        plt.savefig(save_path, dpi=300)
+    # plt.close()
 
-def rotate_image(img_file, rot_angle, save_dir, in_img=None):
+def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=None, custom_rotation_center=None):
     # Read the image from the specified directory
     if in_img is None:
         image = cv2.imread(os.path.join(save_dir, img_file))
@@ -112,8 +112,8 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None):
     h, w = image.shape[:2]
     
     # Define region dimensions (width x height)
-    region_width = 1500 
-    region_height = 1500 
+    region_width = 1920 
+    region_height = 1920 
     
     # Calculate center of the image
     center_x, center_y = w // 2, h // 2
@@ -131,7 +131,10 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None):
     
     # Compute the rotation matrix.
     # OpenCV rotates counter-clockwise for positive angles; if you want clockwise, use -rot_angle
-    M = cv2.getRotationMatrix2D((region_w / 2, region_h / 2), -rot_angle, 1.0)
+    if custom_rotation_center is not None:
+        M = cv2.getRotationMatrix2D(tuple(custom_rotation_center), -rot_angle, 1.0)
+    else:
+        M = cv2.getRotationMatrix2D((region_w / 2, region_h / 2), -rot_angle, 1.0)
     
     # Rotate the extracted region.
     rotated_region = cv2.warpAffine(region, M, (region_w, region_h))
@@ -141,12 +144,23 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None):
     new_image[y1:y2, x1:x2] = rotated_region
     
     # Save the rotated image. The filename includes the rotation angle.
-    save_file = os.path.join(save_dir, f"rotated_{rot_angle}_{img_file}")
-    cv2.imwrite(save_file, new_image)
-    print(f"Rotated image saved to {save_file}")
+    if custom_save_file:
+        cv2.imwrite(custom_save_file, new_image)
+    else:
+        save_file = os.path.join(save_dir, f"rotated_{rot_angle}_{img_file}")
+        cv2.imwrite(save_file, new_image)
+        print(f"Rotated image saved to {save_file}")
+    return new_image
 
-def translate_image(img_file, x, y, save_dir):
-    image = cv2.imread(save_dir + img_file) 
+def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None):
+    if in_img is None:
+        image = cv2.imread(os.path.join(save_dir, img_file))
+        if image is None:
+            print(f"Error: Unable to read image {os.path.join(save_dir, img_file)}")
+            return
+    else:
+        image = in_img 
+
     h, w = image.shape[:2]
     
     # Define the dimensions of the center region.
@@ -176,8 +190,11 @@ def translate_image(img_file, x, y, save_dir):
     # Create a copy of the original image and replace the center region with the translated region.
     new_image = image.copy()
     new_image[y1:y2, x1:x2] = translated_region
-    save_file = save_dir + f"translated_{x}_{y}" + img_file
-    cv2.imwrite(save_file, new_image)
+    if custom_save_file:
+        cv2.imwrite(custom_save_file, new_image)
+    else:
+        save_file = save_dir + f"translated_{x}_{y}" + img_file
+        cv2.imwrite(save_file, new_image)
     return new_image
 
 def shear_image(img_file, shear_angle, save_dir, in_img=None):
@@ -381,4 +398,4 @@ if __name__ == "__main__":
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-44_15_1688827660979_frame750.jpg",
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/translated_-186_-14317_1688827660979_frame850.jpg",
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_95_19_1688827660979_frame950.jpg"]
-    calculate_box_plots(img_list)
+    find_num_boxes("pybullet_env/icp/whale_data/icp_experiments/shot3")

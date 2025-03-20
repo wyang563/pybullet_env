@@ -130,7 +130,7 @@ def calc_all_box_distance(boxes1, boxes2):
             flat_corr_indices[i * box_size + c] = box_size * j + corner_j
     return box_assign_dist, flat_corr_indices.ravel(), nearest_indices 
 
-def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, run_number=0):
+def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, run_number=0, record_transforms=False):
     assert A.shape == B.shape, "A and B must have the same shape"
 
     # Make points homogeneous, copy them to maintain the originals
@@ -138,6 +138,9 @@ def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, run_number=0):
     correspondence_indices = np.zeros(A.shape[0], dtype=int)
     original_A = np.copy(A.reshape(-1, 2))
     box_size = A.shape[1]
+    transforms = []
+    iter_correlations = []
+    point_clouds = []
 
     for i in range(max_iters):
         A_flattened = A.reshape(-1, 2)
@@ -173,15 +176,20 @@ def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, run_number=0):
         org_src = np.dot(T, org_src)
         A = np.zeros((A.shape[0], box_size, 2))
         A = np.copy(org_src[:org_src.shape[0] - 1, :].T.reshape(-1, box_size, 2))
+        # add data 
+        transforms.append(T.copy())
+        iter_correlations.append(correspondence_indices.copy())
+        point_clouds.append(A.copy())
 
         # Check error
         if np.abs(prev_error - distances) < tolerance:
             break
-        
         prev_error = distances
 
     # Compute the final transformation
     T, _, _ = best_fit_transform(original_A, org_src[:m, :].T)
+    if record_transforms:
+        return T, correspondence_indices, prev_error, transforms, iter_correlations, point_clouds
     return T, correspondence_indices, prev_error 
 
 def point_icp(A, B, max_iterations=20, tolerance=0.0001, run_number=0):
@@ -215,7 +223,7 @@ def point_icp(A, B, max_iterations=20, tolerance=0.0001, run_number=0):
     T,_,_ = best_fit_transform(A, src[:m,:].T)
     return T, indices, mean_error
 
-def rot_icp(A, B, N=30, use_point=False):
+def rot_icp(A, B, N=30, use_point=False, record=False):
     '''
     Rotatet A by many random increments, and return the correspondence indices with the lowest error
     '''
@@ -228,6 +236,7 @@ def rot_icp(A, B, N=30, use_point=False):
     lowest_error = float('inf')
     low_correspondence = None
     low_transform = None
+    recorded_clouds = []
     for i in range(N):
         rot_theta = np.deg2rad(360 / N * i)
         R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
@@ -241,7 +250,10 @@ def rot_icp(A, B, N=30, use_point=False):
                     transformed_box.append(transformed_point.tolist())
                 transformed_points.append(transformed_box)
 
-            T, corr_indices, error = icp(np.array(transformed_points), B, run_number=rot_theta)        
+            if record:
+                T, corr_indices, error, transforms, iter_correlations, point_clouds = icp(np.array(transformed_points), B, run_number=rot_theta, record_transforms=True)        
+            else:
+                T, corr_indices, error = icp(np.array(transformed_points), B, run_number=rot_theta)
         else:
             for point in A:
                 point_array = np.array(point)
@@ -258,8 +270,12 @@ def rot_icp(A, B, N=30, use_point=False):
             lowest_error = error 
             low_correspondence = corr_indices
             low_transform = T
-
-    return low_transform, low_correspondence, lowest_error 
+            if record:
+                recorded_clouds.append((rot_theta, A_global_center, transforms, iter_correlations, point_clouds))
+    if not record:
+        return low_transform, low_correspondence, lowest_error 
+    else:
+        return low_transform, low_correspondence, lowest_error, recorded_clouds 
 
 if __name__ == "__main__":
     # A = np.array([[1, 0], [1, 1], [4, 3], [-9, 1]])

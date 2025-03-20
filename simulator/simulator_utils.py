@@ -70,6 +70,8 @@ def setup_folders(sim_dir, num_drones):
             os.makedirs(sim_dir + f"/center_pics{d}/")
     if not os.path.exists(sim_dir + "/icp_plots"):
         os.makedirs(sim_dir + "/icp_plots/")
+    if not os.path.exists(sim_dir + "/path_plots"):
+        os.makedirs(sim_dir + "/path_plots/")
 
 def add_random_targets(target_colors, target_locations, LCR_obj_xy, LCR_obj_colors):
     sampled_order = random.sample(PERMUTATIONS_COLORS, 1)[0]

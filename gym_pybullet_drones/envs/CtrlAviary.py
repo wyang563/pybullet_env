@@ -126,12 +126,13 @@ class CtrlAviary(BaseAviary):
                 # add new urdf files at /home/makramchahine/miniconda3/envs/multimodal/lib/python3.8/site-packages/pybullet_data/samurai.urdf
                 print(f"added {color} at {location} at {angle}")
                 if color == 'cube':
-                    self.object_ids["cube"].append(p.loadURDF(filename_map[color],
-                        [*location, 0.1 + 0.5],
-                        p.getQuaternionFromEuler([0,0,0]),
-                        physicsClientId=self.CLIENT,
-                        globalScaling=0.3
-                        ))
+                    pass
+                    # self.object_ids["cube"].append(p.loadURDF(filename_map[color],
+                    #     [*location, 0.1 + 0.5],
+                    #     p.getQuaternionFromEuler([0,0,0]),
+                    #     physicsClientId=self.CLIENT,
+                    #     globalScaling=0.3
+                    #     ))
                 else:
                     quat = p.getQuaternionFromEuler([0, 0, angle])
                     self.object_ids[color].append(p.loadURDF(filename_map[color],

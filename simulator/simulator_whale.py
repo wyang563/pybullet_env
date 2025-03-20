@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pybullet as p
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 from tqdm import trange
 import cv2
 
@@ -39,7 +40,7 @@ DEFAULT_PARAMS_PATH = None
 DEFAULT_CHECKPOINT_PATH = None
 POINT_CLOUD_REGISTRATION = False
 DEFAULT_MOVE_WHALES = False
-VIDEO_FREQ = 10 # Hz for taking frames for video
+VIDEO_FREQ = 2 # Hz for taking frames for video
 
 SCOUT_H = 7.0
 H = 5.0
@@ -94,8 +95,8 @@ def run_pybullet_only_hike(
     rel_drone_locs = [(x_offset, y_offset)] # lean drone loc
     width = - (num_drones / 4)
     for i in range(num_drones - 1):
-        rel_drone_locs.append((width + x_offset, y_offset))
-        width += num_drones / 12
+        rel_drone_locs.append((-15 + width + x_offset, y_offset + width + 7))
+        width += num_drones / 8
 
 
     print("REL DRONE LOCS: ", rel_drone_locs)
@@ -291,22 +292,15 @@ def run_pybullet_only_hike(
                 # get drone images
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
-                    if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
-                        # plot target point in pixel image
-                        target_pixel = drone_models[str(d)].prev_target_pixel_pos
 
-                        # plot target pixel
-                        if target_pixel is not None:
-                            px, py = int(target_pixel[0]), int(target_pixel[1])
-                            cv2.circle(rgb, (py, px), 5, (0, 0, 0), -1)
-                            cv2.putText(rgb, "target", (py, px), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
+                        if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
                             env._exportImage(img_type=ImageType.RGB,
                                 img_input=rgb,
                                 path=f'{sim_dir}/pics{d}_track',
                                 frame_num=int(i / CTRL_EVERY_N_STEPS),
                             )
 
-                    if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
                         # ICP case
                         success = False
                         if goal_assignment == "icp":
@@ -336,6 +330,13 @@ def run_pybullet_only_hike(
                                 out[d] = states[d][10:13] + [random.uniform(-0.1, 0.1)]
                     else:
                         if d == 0:
+                            if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
+                                rgb, _, seg = env._getDroneImages(d)
+                                env._exportImage(img_type=ImageType.RGB,
+                                    img_input=rgb,
+                                    path=f'{sim_dir}/pics{d}_track',
+                                    frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                )
                             out[d], _ = drone_models[str(d)].get_whales_center(seg, rgb)
                             if drone_models[str(d)].all_drones_centered():
                                 for d in range(1, num_drones):
@@ -347,17 +348,21 @@ def run_pybullet_only_hike(
                                 target_pixel = drone_models[str(d)].prev_target_pixel_pos
 
                                 # plot target pixel
-                                # if target_pixel is not None:
-                                #     rgb, _, seg = env._getDroneImages(d) 
-                                    # target_pixel = drone_models[str(d)].rotate_pixel(target_pixel, rgb.shape, to_global=False)
-                                    # px, py = int(target_pixel[0]), int(target_pixel[1])
-                                    # cv2.circle(rgb, (py, px), 5, (0, 0, 0), -1)
-                                    # cv2.putText(rgb, "target", (py, px), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                                    # env._exportImage(img_type=ImageType.RGB,
-                                    #     img_input=rgb,
-                                    #     path=f'{sim_dir}/pics{d}_track',
-                                    #     frame_num=int(i / CTRL_EVERY_N_STEPS),
-                                    # )
+                                if target_pixel is not None:
+                                    rgb, _, seg = env._getDroneImages(d) 
+                                    px, py = int(target_pixel[0]), int(target_pixel[1])
+                                    cv2.circle(rgb, (py, px), 5, (0, 0, 255), -1)
+
+                                    for idx, pix in enumerate(drone_models[str(d)].icp_whales_pixel_pos):
+                                        px, py = int(pix[0]), int(pix[1])
+                                        # cv2.circle(rgb, (py, px), 2, (0, 0, 0), -1)
+                                        cv2.putText(rgb, f"{idx}", (py - 10, px - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
+                                    env._exportImage(img_type=ImageType.RGB,
+                                        img_input=rgb,
+                                        path=f'{sim_dir}/pics{d}_track',
+                                        frame_num=int(i / CTRL_EVERY_N_STEPS),
+                                    )
 
                                 if drone_models[str(d)].mode != "centered" and drone_models[str(d)].check_centered(target_pixel, rgb.shape):
                                     drone_models[str(d)].mode = "centered"
@@ -375,7 +380,19 @@ def run_pybullet_only_hike(
                                 print(f"Drone {d} has landed")
                                 drone_models[str(d)].mode = "complete"
                                 out[d] = [0, 0, 0, 0]
+                            rgb, _, seg = env._getDroneImages(d)
+                            env._exportImage(img_type=ImageType.RGB,
+                                img_input=rgb,
+                                path=f'{sim_dir}/pics{d}_track',
+                                frame_num=int(i / CTRL_EVERY_N_STEPS),
+                            )
                         elif drone_models[str(d)].mode == "complete":
+                            rgb, _, seg = env._getDroneImages(d)
+                            env._exportImage(img_type=ImageType.RGB,
+                                img_input=rgb,
+                                path=f'{sim_dir}/pics{d}_track',
+                                frame_num=int(i / CTRL_EVERY_N_STEPS),
+                            )
                             out[d] = [0, 0, 0, 0]
                     if success:
                         done_assignments = True
@@ -433,43 +450,50 @@ def run_pybullet_only_hike(
             # plot path on grid 
             if i % (CTRL_EVERY_N_STEPS * 500) == 0:
                 # Create one figure
-                plt.figure(figsize=(8, 6))
-                
+                # Create one figure and axis
+                fig, ax = plt.subplots(figsize=(8, 6))
+                ax.set_autoscale_on(False)
+                shades_of_purple = ['rebeccapurple', 'mediumpurple', 'blueviolet', 'darkorchid', 'plum']
+
                 for d in range(num_drones):
                     data = pd.read_csv(os.path.join(sim_dir, f"state{d}.csv"))
                     
                     x = data.iloc[:, 1]
                     y = data.iloc[:, 2]
                     
-                    # Plot each drone's path on the same figure
-                    if d == 0:                    
-                        plt.plot(x, y, label=f"Scout Drone Path")
+                    # Plot each drone's path on the same axis
+                    if d == 0:
+                        ax.plot(x, y, label="Scout", color="green")
                     else:
-                        plt.plot(x, y, label=f"Tracking Drone {d} Path")
-                
-                # plot target path
+                        ax.plot(x, y, label=f"Agent {d}", color=shades_of_purple[d - 1])
+                    
+                # Plot target path if applicable
                 if move_whales:
-                    data = pd.read_csv(os.path.join(sim_dir, f"target_pos.csv"))
-                    for i, obj in enumerate(env.object_ids[target_obj]):
-                        x = data.iloc[:, 1 + 3 * i]
-                        y = data.iloc[:, 2 + 3 * i]
-                        B_pos = p.getBasePositionAndOrientation(obj)[0]
-                        plt.plot(x, y, label=f"Target {i} Path")
+                    data = pd.read_csv(os.path.join(sim_dir, "target_pos.csv"))
+                    for idx, obj in enumerate(env.object_ids[target_obj]):
+                        x = data.iloc[:, 1 + 3 * idx]
+                        y = data.iloc[:, 2 + 3 * idx]
+                        ax.plot(x, y, label=f"Target {idx} Path", clip_on=True)
 
-                for i, obj in enumerate(env.object_ids[target_obj]):
+                # Add ellipses at target positions
+                for idx, obj in enumerate(env.object_ids[target_obj]):
                     B_pos = p.getBasePositionAndOrientation(obj)[0]
-                    plt.scatter(B_pos[0], B_pos[1])
-                
-                # Label, title, legend
-                plt.xlabel("X")
-                plt.ylabel("Y")
-                # plt.title("Simulation Drone Paths")
-                plt.legend()
+                    oval = Ellipse(xy=(B_pos[0], B_pos[1]), width=0.15, height=0.3, angle=0, 
+                                facecolor='blue', edgecolor='blue', clip_on=True)
+                    ax.add_patch(oval)
 
-                plt.gca().set_aspect('equal', adjustable='box')
-                
-                # Save and close
-                plt.savefig(os.path.join(sim_dir, "all_drones_paths.jpg"), dpi=300)
+                # Hard set the x and y limits to [-3, 12]
+                ax.set_xlim(-4, 12)
+                ax.set_ylim(-4, 12)
+                ax.set_aspect('equal', adjustable='box')  # Maintains equal aspect ratio
+
+                # Labeling and legend
+                ax.set_xlabel("X")
+                ax.set_ylabel("Y")
+                ax.legend()
+
+                # Save and close the figure
+                plt.savefig(os.path.join(sim_dir, f"path_plots/all_drones_paths_iter{i}.pdf"), dpi=300)
                 plt.close()
 
         #### Sync the simulation ###################################
