@@ -12,16 +12,18 @@ variable_timesteps = [
 ]
 
 # list with dims [num_unique_runs, length of sequence]
-num_objects = 5
+num_objects = 7
+num_agents = 4
 object_type = "O_B"
 objects = []
 use_fixed_locs = false 
-fixed_obj_locs = [[3.75, 4.0], [5.2, 5], [4.4, 5], [5, 4], [3.5, 3.5]]
-move_whales = false
+fixed_obj_locs = [[8.43, 10.08], [9.98, 9.86], [9.44, 9.53], [8.52, 8.87], [9.42, 8.67]]
+move_whales = false 
 goal_assignment = "icp"
 gnn_model_path = "pybullet_env/simulator/gnn/models/model_5agents_env6m_comVar_maxedges5_1conv_modelv2_44000.pt"
-search_type = "switchback"
+search_type = "spiral"
 formation_type = "polygon" # either polygon or line (line by default)
 duration_sec = 15 # not actually being used effectively right now
 min_range = 2
-max_range = 5 
+max_range = 5
+debug_images = false

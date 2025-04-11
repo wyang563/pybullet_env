@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from simulator.simulator_utils import *
 import csv
-from pybullet_env.icp.icp import rot_icp 
+from icp.icp import rot_icp 
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm
 import dgl
@@ -28,7 +28,7 @@ IN_POSITION_DIST = 1.1 # distance tracking drones to search drone to be consider
 CTRL_DIST = 0.25
 
 class WhaleDroneModel:
-    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone=False):
+    def __init__(self, drone_id, env, sim_dir, num_drones, num_objects, lead_drone=False):
         self.drone_id = drone_id # IMPORTANT: drone_id is the index of the drone in our drones list
         self.mode = "search"
         self.lead_drone = lead_drone
@@ -44,6 +44,7 @@ class WhaleDroneModel:
         self.icp_whales_pixel_pos = None # for tracking ICP assignment numbers of whales
         self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position (global pixel coordinate of whale being targetted)
         self.num_whales = None # initialized in whale search stage once scout drone determines how many whales there are
+        self.num_objects = num_objects
 
     def set_other_drones(self, other_drones):
         # map of ids to drone objects 
@@ -174,14 +175,14 @@ class WhaleDroneModel:
             plt.axis('off')
 
             # Save the colored connected components image with bounding boxes
-            if self.timestep % 400 == 0:
-                cv2.imwrite(self.sim_dir + f"/segment_pics{self.drone_id}/segments_drone_{self.timestep}.png", colored_img)
+            # if self.timestep % 400 == 0:
+                # cv2.imwrite(self.sim_dir + f"/segment_pics{self.drone_id}/segments_drone_{self.timestep}.png", colored_img)
             
             for box in boxes:
                 cv2.drawContours(colored_img, [np.int0(box)], 0, (0, 255, 0), 2)  # Draw the rectangle in green
 
-            if self.timestep % 400 == 0:
-                cv2.imwrite(self.sim_dir + f"/center_pics{self.drone_id}/segments_drone_{self.timestep}.png", colored_img) 
+            # if self.timestep % 400 == 0:
+                # cv2.imwrite(self.sim_dir + f"/center_pics{self.drone_id}/segments_drone_{self.timestep}.png", colored_img) 
         return centers, boxes, point_cloud
 
     def check_whales(self, seg, rgb):
@@ -379,8 +380,8 @@ class WhaleDroneModel:
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
-    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment, gnn_model_path, search_type):
-        super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, lead_drone=lead_drone)
+    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment, gnn_model_path, search_type, num_objects):
+        super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, num_objects=num_objects, lead_drone=lead_drone)
         self.target_y = 0
         self.init_velocity = [(9.0 - init_position[0]) / 24, (9 - init_position[1]) / 24, 0, 0]
         self.search_target_points = [] # (dx, dy) for the positions that each tagging drone should be at relative to search drone before tracking commences
@@ -621,6 +622,8 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         front = net_corrs.pop()
         net_corrs.insert(0, front)
         print(net_corrs)
+
+        num_objects = len(net_corrs[0])
          
         with open(f"pybullet_env/icp/sim_data/run_{run_num}/points.json", "w") as f:      
             json.dump(origin_center_all_whale_boxes, f, indent=4)
@@ -632,7 +635,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             json.dump([c.tolist() for c in net_corrs], f, indent=4)
 
         # check the mapping is the identity at the end
-        if net_corrs[0].tolist() != [i for i in range(self.num_drones - 1)]:
+        if net_corrs[0].tolist() != [i for i in range(num_objects)]:
             assert False, f"final net correlation was not the identity mapping: {net_corrs[0]}"
         
         # reshuffle all_whale_boxes
@@ -643,10 +646,10 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         print("ICP whale consensus succesful!")
 
         # nearest neighbor for whichever point is closest to a given whale
-        drone_to_whale_dists = np.zeros((self.num_drones - 1, len(all_whale_boxes)))  
+        drone_to_whale_dists = np.zeros((self.num_drones - 1, num_objects))  
         center_pixel = np.array([rgb1.shape[0] // 2, rgb1.shape[1] // 2])
         for i in range(self.num_drones - 1):
-            for j in range(len(all_whale_boxes[i])):
+            for j in range(num_objects):
                 whale_center = np.mean(all_whale_boxes[i][j], axis=0)
                 drone_to_whale_dists[i][j] = norm(whale_center - center_pixel)
         return True, drone_to_whale_dists, all_whale_boxes, net_corrs, rgb1.shape
@@ -715,7 +718,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
             y_coords.append(pos[1])
         agentsPos = torch.tensor([x_coords, y_coords])        
 
-        u_com,v_com = self.compute_comm_edges(agentsPos) 
+        u_com, v_com = self.compute_comm_edges(agentsPos) 
         graph_data = {('agent', 'assigns', 'goal'): (u, v), ('goal', 'assigns', 'agent'): (v, u),('agent', 'communicates', 'agent'): (u_com, v_com)}
         graph = dgl.heterograph(graph_data,idtype=torch.int32)
         
@@ -758,10 +761,10 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         print("PERFORMING GNN ANALYSIS ON WHALE CENTERS")
 
         # create dgl graph object (as per how it is done in create_dataset.py)
-        success, cost_matrix, all_whale_boxes, net_corrs, rgb_shape = self.get_drone_to_whale_dists()
+        success, cost_matrix, all_whale_boxes, _, rgb_shape = self.get_drone_to_whale_dists()
         if not success:
             return False, None, None 
-        nAgents, nGoals = self.num_drones - 1, self.num_drones - 1 
+        nAgents, nGoals = self.num_drones - 1, len(all_whale_boxes) 
         attr_dim = 16
 
         # normalize cost matrix

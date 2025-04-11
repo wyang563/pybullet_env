@@ -1,4 +1,4 @@
-from pybullet_env.icp.icp import rot_icp, icp
+from icp.icp import rot_icp, icp
 import numpy as np
 import matplotlib.pyplot as plt
 import os

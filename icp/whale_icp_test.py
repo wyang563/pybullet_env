@@ -152,7 +152,7 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=No
         print(f"Rotated image saved to {save_file}")
     return new_image
 
-def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None):
+def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None, save=False):
     if in_img is None:
         image = cv2.imread(os.path.join(save_dir, img_file))
         if image is None:
@@ -190,11 +190,12 @@ def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None
     # Create a copy of the original image and replace the center region with the translated region.
     new_image = image.copy()
     new_image[y1:y2, x1:x2] = translated_region
-    if custom_save_file:
-        cv2.imwrite(custom_save_file, new_image)
-    else:
-        save_file = save_dir + f"translated_{x}_{y}" + img_file
-        cv2.imwrite(save_file, new_image)
+    if save:
+        if custom_save_file:
+            cv2.imwrite(custom_save_file, new_image)
+        else:
+            save_file = os.path.join(save_dir, f"translated_{x}_{y}" + img_file)
+            cv2.imwrite(save_file, new_image)
     return new_image
 
 def shear_image(img_file, shear_angle, save_dir, in_img=None):
@@ -234,21 +235,60 @@ def shear_image(img_file, shear_angle, save_dir, in_img=None):
     cv2.imwrite(out_path, sheered_image)
     print(f"Sheered image saved to {out_path}")
 
-def generate_augmentations(img_dir):
+def generate_augmentations(img_dir, num_images=5):
     # CONFIG: TOGGLE FOR DIFFERENT AUGMENTATIONS
     rotation_angle_range = [-180, 180]
     translation_range = [-200, 200]
-    shear_angle_range = [-10, 10]
+    base_img_path = "base_img.jpg"
 
-    for img_file in os.listdir(img_dir):
+    for _ in range(num_images):
         translation = np.random.randint(translation_range[0], translation_range[1], size=2)
-        shear_angle = np.random.randint(shear_angle_range[0], shear_angle_range[1])
-        rotation_angle1 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
-        rotation_angle2 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
-        translated_img = translate_image(img_file, translation[0], translation[1], img_dir)
-        rotate_image(img_file, rotation_angle1, img_dir, in_img=translated_img)
-        rotate_image(img_file, rotation_angle2, img_dir, in_img=translated_img)
-        shear_image(img_file, shear_angle, img_dir)
+        rotation_angle = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+        translated_img = translate_image(base_img_path, translation[0], translation[1], img_dir)
+        rotate_image(base_img_path, rotation_angle, img_dir, in_img=translated_img)
+
+    # for img_file in os.listdir(img_dir):
+    #     translation = np.random.randint(translation_range[0], translation_range[1], size=2)
+    #     shear_angle = np.random.randint(shear_angle_range[0], shear_angle_range[1])
+    #     rotation_angle1 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+    #     rotation_angle2 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+    #     translated_img = translate_image(img_file, translation[0], translation[1], img_dir)
+    #     rotate_image(img_file, rotation_angle1, img_dir, in_img=translated_img)
+    #     rotate_image(img_file, rotation_angle2, img_dir, in_img=translated_img)
+    #     shear_image(img_file, shear_angle, img_dir)
+
+def extract_boxes(img_0_path, img_1_path):
+    if not os.path.exists("pybullet_env/icp/icp_plots"):
+        os.makedirs("pybullet_env/icp/icp_plots")
+    
+    model_file = "pybullet_env/icp/whale_data/last.pt"
+
+    model = YOLO(model_file)
+    img_0 = cv2.imread(img_0_path)
+    img_1 = cv2.imread(img_1_path)
+
+    # Save the images
+    cv2.imwrite(f"pybullet_env/icp/img_0.jpg", img_0)
+    cv2.imwrite(f"pybullet_env/icp/img_1.jpg", img_1)
+
+    with torch.no_grad():
+        img_0_path = f"pybullet_env/icp/img_0.jpg"
+        img_1_path = f"pybullet_env/icp/img_1.jpg"
+        results = model(source=[img_0_path, img_1_path],
+                        conf=0.50,
+                        imgsz=640,
+                        classes=[0],
+                        device="cpu",
+                    )
+        vid1_boxes = results[0].obb.xyxyxyxy.numpy()
+        vid2_boxes = results[1].obb.xyxyxyxy.numpy()
+        num_boxes1 = vid1_boxes.shape[0]
+        num_boxes2 = vid2_boxes.shape[0]
+    
+    if abs(num_boxes1 - num_boxes2) > 0:
+        return None
+    _, corr, _ = rot_icp(vid2_boxes, vid1_boxes, use_point=False)
+    return corr
 
 def calculate_box_plots(files):
     if not os.path.exists("pybullet_env/icp/icp_plots"):
@@ -383,6 +423,49 @@ def pairwise_box_plots(img_dir):
     print(failed_boxes)
     print(total)
 
+def eval_whale_icp(num_runs=20, num_agents=5):
+    successes = 0
+    base_img_list = os.listdir("pybullet_env/icp/whale_data/yolo_dataset/images/val") 
+    for _ in range(num_runs):
+        # generate test set of images
+        if os.path.exists("pybullet_env/icp/whale_data/whale_icp_eval"):
+            files = os.listdir("pybullet_env/icp/whale_data/whale_icp_eval")
+            for file in files:
+                os.remove(os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", file))
+        else:
+            os.makedirs("pybullet_env/icp/whale_data/whale_icp_eval")
+        
+        base_img_path = random.choice(base_img_list)
+        base_img_path = os.path.join("pybullet_env/icp/whale_data/yolo_dataset/images/val", base_img_path)
+        base_img = cv2.imread(base_img_path)
+        cv2.imwrite("pybullet_env/icp/whale_data/whale_icp_eval/base_img.jpg", base_img)
+        generate_augmentations("pybullet_env/icp/whale_data/whale_icp_eval", num_images=num_agents-1)
+
+        # calculate rot_icp correlations
+        imgs = os.listdir("pybullet_env/icp/whale_data/whale_icp_eval")
+        correlations = []
+        for i in range(len(imgs)):
+            img_0_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[i]) 
+            img_1_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[(i+1) % len(imgs)])
+            correlations.append(extract_boxes(img_0_path, img_1_path))
+        net_corrs = []
+        for i in range(len(correlations)):
+            composite = np.arange(len(correlations[i]))
+            for j in range(i, -1, -1):
+                new_composite = np.zeros(len(composite), dtype=int)
+                for k in range(len(composite)):
+                    new_composite[correlations[j][k]] = composite[k]
+                composite = new_composite.copy()
+            net_corrs.append(composite)
+        
+        front = net_corrs.pop()
+        net_corrs.insert(0, front)
+        print("final net correlations")
+        print(net_corrs)
+        if net_corrs[0].tolist() == [i for i in range(len(net_corrs[0]))]:
+            successes += 1
+    print(f"Success rate: {successes}/{num_runs} = {successes/num_runs * 100}%")
+
 if __name__ == "__main__":
     # generate_augmentations("pybullet_env/icp/whale_data/icp_experiments/shot1/")
     # pairwise_box_plots("pybullet_env/icp/whale_data/icp_experiments/shot1/")
@@ -393,9 +476,10 @@ if __name__ == "__main__":
     # img_list = []
     # for _ in range(5):
     #     img_list.append(os.path.join(img_dir, random.choice(dir_files)))
-    img_list = ["pybullet_env/icp/whale_data/icp_experiments/shot3/15_1688827660979_frame750.jpg",
-                "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-119_19_1688827660979_frame950.jpg",
-                "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-44_15_1688827660979_frame750.jpg",
-                "pybullet_env/icp/whale_data/icp_experiments/shot3/translated_-186_-14317_1688827660979_frame850.jpg",
-                "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_95_19_1688827660979_frame950.jpg"]
-    find_num_boxes("pybullet_env/icp/whale_data/icp_experiments/shot3")
+    # img_list = ["pybullet_env/icp/whale_data/icp_experiments/shot3/15_1688827660979_frame750.jpg",
+    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-119_19_1688827660979_frame950.jpg",
+    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-44_15_1688827660979_frame750.jpg",
+    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/translated_-186_-14317_1688827660979_frame850.jpg",
+    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_95_19_1688827660979_frame950.jpg"]
+    # find_num_boxes("pybullet_env/icp/whale_data/icp_experiments/shot3")
+    eval_whale_icp(num_runs=100, num_agents=3)

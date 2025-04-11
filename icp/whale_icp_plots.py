@@ -27,16 +27,23 @@ import math
 #     # Translate back to full image coordinates
 #     return new_x, new_y
 
-def calculate_icp_plots(img0_file):
+def calculate_icp_plots(img0_file, img0_rot=0, img1_rot=0, img1_translation=None):
+    if not os.path.exists(f"pybullet_env/icp/icp_plots/img0_rot{img0_rot}_img1_rot{img1_rot}_img1_translation{img1_translation}"):
+        os.makedirs(f"pybullet_env/icp/icp_plots/img0_rot{img0_rot}_img1_rot{img1_rot}_img1_translation{img1_translation}")
+
     model_file = "pybullet_env/icp/whale_data/last.pt"
     model = YOLO(model_file)
     img_0 = cv2.imread(img0_file)
-    cv2.imwrite(f"pybullet_env/icp/img_0.jpg", img_0)
+    rotate_image("", img0_rot, save_dir="pybullet_env/icp", in_img=img_0, custom_save_file="pybullet_env/icp/img_0.jpg")
+    # cv2.imwrite(f"pybullet_env/icp/img_0.jpg", img_0)
 
     # generate image 2 from augmentations
-    base_rot = 65 
-    dx, dy = 100, 150 
-    img_1 = translate_image(img0_file, dx, dy, save_dir="", custom_save_file="pybullet_env/icp/img_1.jpg")
+    base_rot = img1_rot 
+    if img1_translation is None:
+        init_dx, init_dy = 0, 0
+    else:
+        init_dx, init_dy = img1_translation
+    img_1 = translate_image(img0_file, init_dx, init_dy, save_dir="", custom_save_file="pybullet_env/icp/img_1.jpg")
     rotate_image("", base_rot, save_dir="pybullet_env/icp", in_img=img_1, custom_save_file="pybullet_env/icp/img_1.jpg")
 
     with torch.no_grad():
@@ -63,25 +70,47 @@ def calculate_icp_plots(img0_file):
         incr_center = t[1]
         print(f"rot_theta: {rot_theta}")
         cum_transform_angle = 0
+        cum_dx = init_dx
+        cum_dy = init_dy
         i = 0
         for T, corr, vid2_iter_boxes in zip(t[2], t[3], t[4]):
             transform_angle = np.rad2deg(np.arccos(min(1, T[0, 0])))
             cum_transform_angle += transform_angle
             # incr_center = warp_affine_pixel(incr_center[0], incr_center[1], transform_angle)    
-            vid2_iter_boxes += incr_center
+            # vid2_iter_boxes += incr_center
             dx, dy = T[0, 2], T[1, 2]
-            translation = translate_image(img0_file, dx, dy, save_dir="") 
-            rotate_image("", base_rot + rot_theta + cum_transform_angle, save_dir="", in_img=translation, custom_save_file="pybullet_env/icp/pred_final.jpg", custom_rotation_center=incr_center) 
+            cum_dx += dx
+            cum_dy += dy
+            translation = translate_image(img0_file, cum_dx, cum_dy, save_dir="") 
+            rotate_image("", base_rot + rot_theta + cum_transform_angle, save_dir="", in_img=translation, custom_save_file="pybullet_env/icp/pred_final.jpg") 
+
+            # run model on the final transformed image
+            results = model(source=["pybullet_env/icp/pred_final.jpg"],
+                            conf=0.60,
+                            imgsz=640,
+                            classes=[0],
+                            device="cpu",
+                        )
+            final_boxes = results[0].obb.xyxyxyxy.numpy()
+            final_center = np.mean(final_boxes.reshape(-1, 2), axis=0)
+            vid2_center = np.mean(vid2_iter_boxes.reshape(-1, 2), axis=0)
+            incr_center = final_center - vid2_center
+            vid2_iter_boxes += incr_center
             plot_boxed_images(["pybullet_env/icp/img_0.jpg", "pybullet_env/icp/pred_final.jpg"], 
                               [vid1_boxes, vid2_iter_boxes], 
                               [[i for i in range(len(vid1_boxes))], corr], 
-                              save_path=f"pybullet_env/icp/icp_plots/init_rotation{rot_theta}_iter{i}.pdf")
+                              save_path=f"pybullet_env/icp/icp_plots/img0_rot{img0_rot}_img1_rot{img1_rot}_img1_translation{img1_translation}/init_rotation{rot_theta}_iter{i}.pdf")
             i += 1
     
 if __name__ == "__main__":
+    rotations = [0, -119, -44]
+    transformations = [[0, None], [-119, None], [-44, None], [0, (-186, -143)], [95, None]]
     img_list = ["pybullet_env/icp/whale_data/icp_experiments/shot3/15_1688827660979_frame750.jpg",
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-119_19_1688827660979_frame950.jpg",
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-44_15_1688827660979_frame750.jpg",
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/translated_-186_-14317_1688827660979_frame850.jpg",
                 "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_95_19_1688827660979_frame950.jpg"]
-    calculate_icp_plots(img_list[0]) 
+    for i in range(1, len(transformations)):
+        t1 = transformations[i]
+        t2 = transformations[(i + 1) % len(transformations)]
+        calculate_icp_plots(img_list[0], img0_rot=t1[0], img1_rot=t2[0], img1_translation=t2[1]) 

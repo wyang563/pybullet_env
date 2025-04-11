@@ -51,6 +51,7 @@ def run_pybullet_only_hike(
         output_folder=None,
         normalize_path=None,
         drone=DEFAULT_DRONES,
+        num_objects=DEFAULT_NUM_DRONES,
         num_drones=DEFAULT_NUM_DRONES,
         physics=DEFAULT_PHYSICS,
         vision=DEFAULT_VISION,
@@ -70,7 +71,8 @@ def run_pybullet_only_hike(
         drone_formation_type="line",
         target_obj="B",
         gnn_model_path=None,
-        search_type="switchback"
+        search_type="switchback",
+        debug_images=False,
 ):
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
@@ -78,9 +80,17 @@ def run_pybullet_only_hike(
 
     #! Trajectory-specific parameters
     #* Env Params
-    sim_name = "save-flight-" + datetime.now().strftime("%m.%d.%Y_%H.%M.%S.%f") # include milliseconds in save name for parallel runs
-    sim_dir = os.path.join(output_folder, sim_name)
-    setup_folders(sim_dir, num_drones)
+    # keep retrying creating output folders
+    while True:
+        sim_name = "save-flight-" + datetime.now().strftime("%m.%d.%Y_%H.%M.%S.%f") # include milliseconds in save name for parallel runs
+        sim_dir = os.path.join(output_folder, sim_name)
+        try:
+            setup_folders(sim_dir, num_drones)
+            break
+        except FileExistsError:
+            time.sleep(5)
+        except:
+            assert False, "some other error occurred when setting up folders"
 
     # Theta = random.random() * 2 * np.pi
     Theta = 0
@@ -95,9 +105,8 @@ def run_pybullet_only_hike(
     rel_drone_locs = [(x_offset, y_offset)] # lean drone loc
     width = - (num_drones / 4)
     for i in range(num_drones - 1):
-        rel_drone_locs.append((-15 + width + x_offset, y_offset + width + 7))
+        rel_drone_locs.append((width + x_offset, -0.5 + y_offset + width))
         width += num_drones / 8
-
 
     print("REL DRONE LOCS: ", rel_drone_locs)
     ordered_objs.append("cube")
@@ -172,6 +181,7 @@ def run_pybullet_only_hike(
             drone_models[str(i)] = WhaleDroneLeadModel(drone_id=str(i), 
                                                        env=env, sim_dir=sim_dir, 
                                                        num_drones=num_drones,
+                                                       num_objects=num_objects,
                                                        lead_drone=True, 
                                                        init_position=rel_drone_locs[i],
                                                        formation_type=drone_formation_type, 
@@ -182,6 +192,7 @@ def run_pybullet_only_hike(
             drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), 
                                                    env=env, 
                                                    num_drones=num_drones,
+                                                   num_objects=num_objects,
                                                    sim_dir=sim_dir, 
                                                    lead_drone=False) 
 
@@ -229,7 +240,7 @@ def run_pybullet_only_hike(
             if drone_models["0"].mode == "search":
                 # get lead drone image
                 rgb, _, seg = env._getDroneImages(0)
-                if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
+                if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
                     env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
                                     path=f'{sim_dir}/pics0_track',
@@ -256,7 +267,7 @@ def run_pybullet_only_hike(
             elif drone_models["0"].mode == "whales":
                 for d in range(num_drones):
                     rgb, _, seg = env._getDroneImages(d)
-                    if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
+                    if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
                         env._exportImage(img_type=ImageType.RGB,
                                         img_input=rgb,
                                         path=f'{sim_dir}/pics{d}_track',
@@ -294,7 +305,7 @@ def run_pybullet_only_hike(
                     rgb, _, seg = env._getDroneImages(d)
 
                     if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
-                        if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
+                        if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
                             env._exportImage(img_type=ImageType.RGB,
                                 img_input=rgb,
                                 path=f'{sim_dir}/pics{d}_track',
@@ -330,7 +341,7 @@ def run_pybullet_only_hike(
                                 out[d] = states[d][10:13] + [random.uniform(-0.1, 0.1)]
                     else:
                         if d == 0:
-                            if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0:
+                            if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
                                 rgb, _, seg = env._getDroneImages(d)
                                 env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
@@ -493,7 +504,9 @@ def run_pybullet_only_hike(
                 ax.legend()
 
                 # Save and close the figure
-                plt.savefig(os.path.join(sim_dir, f"path_plots/all_drones_paths_iter{i}.pdf"), dpi=300)
+
+                plt.savefig(os.path.join(sim_dir, f"all_drones_paths_iter.pdf"), dpi=100)
+                # plt.savefig(os.path.join(sim_dir, f"path_plots/all_drones_paths_iter{i}.pdf"), dpi=300)
                 plt.close()
 
         #### Sync the simulation ###################################
