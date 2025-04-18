@@ -9,6 +9,9 @@ import cv2
 import os
 import math
 import random
+import json
+from collections import defaultdict
+from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -99,6 +102,47 @@ def plot_boxed_images(img_list, boxes_list, net_corrs, save_path=None):
         plt.savefig(save_path, dpi=300)
     # plt.close()
 
+def plot_success_rate_histogram(arr, num_agents, save_filename="pybullet_env/icp/histogram.pdf"): # Added save_filename parameter
+    """
+    Calculates the success rate (ratio of 1s) for each sublist in arr
+    and plots the rates as a histogram (bar chart), saving it to a file.
+
+    Args:
+        arr: A list of lists, where sublists contain 0s and 1s.
+        save_filename (str): The name of the file to save the plot to.
+    """
+    rates = []
+    indices = list(range(len(arr)))
+
+    for i in indices:
+        sublist = arr[i]
+        sublist_len = len(sublist)
+        if sublist_len == 0:
+            rates.append(0.0)
+        else:
+            count_of_ones = sum(1 for item in sublist if item == 1)
+            rate = count_of_ones / sublist_len
+            rates.append(rate)
+
+    # Create the bar chart (histogram)
+    plt.figure(figsize=(10, 6))
+    plt.bar(indices, rates, color='skyblue', edgecolor='black')
+
+    plt.xlabel("Index (i)")
+    plt.ylabel("Success Rate (Count of 1s / Length)")
+    plt.title("Success Rate per Sublist Index")
+    plt.xticks(indices) # Ensure each index has a tick
+    plt.ylim(0, 1.1) # Set y-axis limits from 0 to 1.1 for clarity
+    plt.grid(axis='y', linestyle='--')
+
+    # Save the plot instead of showing it
+    save_filename = os.path.join("pybullet_env/icp", f"{num_agents}_histogram.pdf")
+    plt.savefig(save_filename, dpi=300)
+    print(f"Histogram saved to {save_filename}") # Optional: confirmation message
+    plt.close() # Close the plot figure to free memory
+
+
+
 def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=None, custom_rotation_center=None):
     # Read the image from the specified directory
     if in_img is None:
@@ -109,17 +153,21 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=No
     else:
         image = in_img 
 
+    # vary padding to simulate taking images from different heights
+    # padding = random.randint(250, 500)
+    padding = 300
+    image = cv2.copyMakeBorder(image, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
     h, w = image.shape[:2]
     
     # Define region dimensions (width x height)
-    region_width = 1920 
-    region_height = 1920 
+    region_width = 2160 
+    region_height = 2160 
     
     # Calculate center of the image
     center_x, center_y = w // 2, h // 2
     
     # Determine cropping boundaries for the center region.
-    # Clamp boundaries if necessary (here we assume image dimensions are large enough).
     x1 = max(0, center_x - region_width // 2)
     x2 = min(w, center_x + region_width // 2)
     y1 = max(0, center_y - region_height // 2)
@@ -141,7 +189,13 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=No
     
     # Create a copy of the original image and replace the center region with the rotated region.
     new_image = image.copy()
-    new_image[y1:y2, x1:x2] = rotated_region
+
+    # You can either:
+    # 1) Crop the larger rotated region down to the original region size, or
+    # 2) Paste the entire larger region back in a different way, e.g., centered.
+    # Example 1: just overwrite with the same bounding box size:
+    cropped_rotated = rotated_region[0:region_h, 0:region_w]
+    new_image[y1:y2, x1:x2] = cropped_rotated
     
     # Save the rotated image. The filename includes the rotation angle.
     if custom_save_file:
@@ -149,7 +203,7 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=No
     else:
         save_file = os.path.join(save_dir, f"rotated_{rot_angle}_{img_file}")
         cv2.imwrite(save_file, new_image)
-        print(f"Rotated image saved to {save_file}")
+        # print(f"Rotated image saved to {save_file}")
     return new_image
 
 def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None, save=False):
@@ -164,8 +218,8 @@ def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None
     h, w = image.shape[:2]
     
     # Define the dimensions of the center region.
-    region_width = 1500 
-    region_height = 1500 
+    region_width = 2160 
+    region_height = 2160 
     
     # Calculate the center point.
     center_x, center_y = w // 2, h // 2
@@ -238,13 +292,13 @@ def shear_image(img_file, shear_angle, save_dir, in_img=None):
 def generate_augmentations(img_dir, num_images=5):
     # CONFIG: TOGGLE FOR DIFFERENT AUGMENTATIONS
     rotation_angle_range = [-180, 180]
-    translation_range = [-200, 200]
+    translation_range = [0, 0]
     base_img_path = "base_img.jpg"
 
     for _ in range(num_images):
-        translation = np.random.randint(translation_range[0], translation_range[1], size=2)
+        # translation = np.random.randint(translation_range[0], translation_range[1], size=2)
         rotation_angle = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
-        translated_img = translate_image(base_img_path, translation[0], translation[1], img_dir)
+        translated_img = translate_image(base_img_path, 0, 0, img_dir)
         rotate_image(base_img_path, rotation_angle, img_dir, in_img=translated_img)
 
     # for img_file in os.listdir(img_dir):
@@ -275,20 +329,22 @@ def extract_boxes(img_0_path, img_1_path):
         img_0_path = f"pybullet_env/icp/img_0.jpg"
         img_1_path = f"pybullet_env/icp/img_1.jpg"
         results = model(source=[img_0_path, img_1_path],
-                        conf=0.50,
+                        conf=0.55,
                         imgsz=640,
                         classes=[0],
                         device="cpu",
+                        verbose=False,
                     )
         vid1_boxes = results[0].obb.xyxyxyxy.numpy()
         vid2_boxes = results[1].obb.xyxyxyxy.numpy()
         num_boxes1 = vid1_boxes.shape[0]
         num_boxes2 = vid2_boxes.shape[0]
-    
-    if abs(num_boxes1 - num_boxes2) > 0:
-        return None
-    _, corr, _ = rot_icp(vid2_boxes, vid1_boxes, use_point=False)
-    return corr
+
+    correct = num_boxes1 == num_boxes2 
+    lowest_conf = min(results[0].obb.conf.numpy().min(),
+                      results[1].obb.conf.numpy().min())
+    num_whales = max(num_boxes1, num_boxes2)
+    return vid1_boxes, vid2_boxes, correct, num_whales, lowest_conf
 
 def calculate_box_plots(files):
     if not os.path.exists("pybullet_env/icp/icp_plots"):
@@ -315,8 +371,8 @@ def calculate_box_plots(files):
         # y1 = max(0, center_y - crop_size // 2)
         # x2 = min(width, center_x + crop_size // 2)
         # y2 = min(height, center_y + crop_size // 2)
-        # img_1 = img_1[y1:y2, x1:x2]
-        # img_2 = img_2[y1:y2, x1:x2] 
+        # img_1 = img_1[y1:y2]
+        # img_2 = img_2[y1:y2] 
 
         # Save the images
         cv2.imwrite(f"pybullet_env/icp/img_0.jpg", img_1)
@@ -326,7 +382,7 @@ def calculate_box_plots(files):
             img_1_path = f"pybullet_env/icp/img_0.jpg"
             img_2_path = f"pybullet_env/icp/img_{i}.jpg"
             results = model(source=[img_1_path, img_2_path],
-                            conf=0.60,
+                            conf=0.50,
                             imgsz=640,
                             classes=[0],
                             device="cpu",
@@ -424,10 +480,14 @@ def pairwise_box_plots(img_dir):
     print(total)
 
 def eval_whale_icp(num_runs=20, num_agents=5):
-    successes = 0
-    base_img_list = os.listdir("pybullet_env/icp/whale_data/yolo_dataset/images/val") 
-    for _ in range(num_runs):
+    img_dir = "pybullet_env/icp/whale_data/yolo_dataset/images/val"
+    base_img_list = os.listdir(img_dir) 
+    conf_accuracy_database = defaultdict(list)
+    icp_accuracy_database = defaultdict(list)
+
+    for _ in tqdm(range(num_runs)):
         # generate test set of images
+        reset = False
         if os.path.exists("pybullet_env/icp/whale_data/whale_icp_eval"):
             files = os.listdir("pybullet_env/icp/whale_data/whale_icp_eval")
             for file in files:
@@ -436,35 +496,81 @@ def eval_whale_icp(num_runs=20, num_agents=5):
             os.makedirs("pybullet_env/icp/whale_data/whale_icp_eval")
         
         base_img_path = random.choice(base_img_list)
-        base_img_path = os.path.join("pybullet_env/icp/whale_data/yolo_dataset/images/val", base_img_path)
+        base_img_path = os.path.join(img_dir, base_img_path)
         base_img = cv2.imread(base_img_path)
         cv2.imwrite("pybullet_env/icp/whale_data/whale_icp_eval/base_img.jpg", base_img)
-        generate_augmentations("pybullet_env/icp/whale_data/whale_icp_eval", num_images=num_agents-1)
+        generate_augmentations("pybullet_env/icp/whale_data/whale_icp_eval", num_images=num_agents)
 
         # calculate rot_icp correlations
         imgs = os.listdir("pybullet_env/icp/whale_data/whale_icp_eval")
         correlations = []
-        for i in range(len(imgs)):
-            img_0_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[i]) 
-            img_1_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[(i+1) % len(imgs)])
-            correlations.append(extract_boxes(img_0_path, img_1_path))
-        net_corrs = []
-        for i in range(len(correlations)):
-            composite = np.arange(len(correlations[i]))
-            for j in range(i, -1, -1):
-                new_composite = np.zeros(len(composite), dtype=int)
-                for k in range(len(composite)):
-                    new_composite[correlations[j][k]] = composite[k]
-                composite = new_composite.copy()
-            net_corrs.append(composite)
-        
-        front = net_corrs.pop()
-        net_corrs.insert(0, front)
-        print("final net correlations")
-        print(net_corrs)
-        if net_corrs[0].tolist() == [i for i in range(len(net_corrs[0]))]:
-            successes += 1
-    print(f"Success rate: {successes}/{num_runs} = {successes/num_runs * 100}%")
+        icp_boxes = []
+        imgs.remove("base_img.jpg")
+        try:
+            for i in range(len(imgs)):
+                img_0_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[i]) 
+                img_1_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[(i+1) % len(imgs)])
+                boxes0, boxes1, correct, num_whales, lowest_conf = extract_boxes(img_0_path, img_1_path)
+                if correct:
+                    icp_boxes.append([boxes0, boxes1])
+                else:
+                    reset = True
+                
+                # get threshold
+                bucket = 0
+                if lowest_conf < 0.3:
+                    bucket = 0
+                elif 0.3 <= lowest_conf < 0.5: # Use <= for lower bound
+                    bucket = 1
+                elif 0.5 <= lowest_conf < 0.7: # Use <= for lower bound
+                    bucket = 2
+                elif lowest_conf >= 0.7: # Use >= for lower bound
+                    bucket = 3
+                # Convert lowest_conf to standard float here
+                conf_accuracy_database[bucket].append({"num_whales": num_whales, "lowest_conf": float(lowest_conf), "correct": correct})
+
+            if reset:
+                # reset run, don't do cyclical ICP
+                continue
+            
+            # perform ICP on all pairs
+            for i in range(len(icp_boxes)):
+                box_0 = icp_boxes[i][0]
+                box_1 = icp_boxes[i][1]
+                _, corr, _ = rot_icp(box_1, box_0, use_point=False)
+                correlations.append(corr.tolist())
+
+            net_corrs = []
+            for i in range(len(correlations)):
+                composite = np.arange(len(correlations[i]))
+                for j in range(i, -1, -1):
+                    new_composite = np.zeros(len(composite), dtype=int)
+                    for k in range(len(composite)):
+                        new_composite[correlations[j][k]] = composite[k]
+                    composite = new_composite.copy()
+                net_corrs.append(composite)
+            
+            front = net_corrs.pop()
+            net_corrs.insert(0, front)
+            icp_correct = net_corrs[0].tolist() == [i for i in range(len(net_corrs[0]))]
+            # Ensure num_whales is a standard int if it comes from numpy
+            icp_accuracy_database[int(num_whales)].append(icp_correct) 
+
+        except Exception as e:
+            print(str(e))
+
+    # write stuff to json files
+    # Ensure keys are strings for JSON compatibility if they are numpy ints
+    conf_accuracy_database_serializable = {str(k): v for k, v in conf_accuracy_database.items()}
+    icp_accuracy_database_serializable = {str(k): v for k, v in icp_accuracy_database.items()}
+
+    with open(f"pybullet_env/icp/whale_data/conf_accuracy_num_agents{num_agents}.json", "w") as f:
+        json.dump(conf_accuracy_database_serializable, f, indent=2) # Added indent for readability
+    with open(f"pybullet_env/icp/whale_data/icp_accuracy_num_agents{num_agents}.json", "w") as f:
+        json.dump(icp_accuracy_database_serializable, f, indent=2) # Added indent for readability
+
+    print("RUN: ", num_agents)
+
 
 if __name__ == "__main__":
     # generate_augmentations("pybullet_env/icp/whale_data/icp_experiments/shot1/")
@@ -482,4 +588,7 @@ if __name__ == "__main__":
     #             "pybullet_env/icp/whale_data/icp_experiments/shot3/translated_-186_-14317_1688827660979_frame850.jpg",
     #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_95_19_1688827660979_frame950.jpg"]
     # find_num_boxes("pybullet_env/icp/whale_data/icp_experiments/shot3")
-    eval_whale_icp(num_runs=100, num_agents=3)
+    print("STARTING PROGRAM")
+    for i in range(2, 20, 2):
+        eval_whale_icp(num_runs=10, num_agents=i)
+
