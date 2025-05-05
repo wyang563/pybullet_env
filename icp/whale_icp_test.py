@@ -1,7 +1,7 @@
 import torch
 from datetime import datetime
 from ultralytics import YOLO
-from icp import rot_icp 
+from icp import rot_icp, plot_rectangles 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -12,95 +12,93 @@ import random
 import json
 from collections import defaultdict
 from tqdm import tqdm
+import re
+import glob
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def make_black_transparent(image, threshold=10):
-    # Create an alpha channel set to 255 (opaque)
-    alpha = np.ones(image.shape[:2], dtype=np.uint8) * 255
+# ------------------------------------------------------------------
+# 1. helper – repaint would‑be‑transparent pixels to page background
+# ------------------------------------------------------------------
+def make_black_transparent(image, threshold=10, bg_color=(255, 255, 255)):
+    """
+    Return an RGBA image in which
+      • pixels darker than `threshold` in **all** channels become transparent
+      • those pixels' RGB is painted `bg_color` so edge blending has no halo
+    """
+    image = image.copy()
+    h, w = image.shape[:2]
 
-    # Create a mask where pixels are considered black (all channels are below the threshold)
+    # alpha channel starts fully opaque
+    alpha = np.full((h, w), 255, dtype=np.uint8)
+
+    # mask of "black" pixels (all channels below threshold)
     black_mask = np.all(image < threshold, axis=-1)
+
+    # make them transparent ...
     alpha[black_mask] = 0
+    # ... and paint their RGB the same colour as the page background
+    image[black_mask] = bg_color
 
-    # Combine the original image with the alpha channel to form an RGBA image.
-    image_rgba = np.dstack((image, alpha))
-    return image_rgba
+    return np.dstack((image, alpha))
 
-def plot_boxed_images(img_list, boxes_list, net_corrs, save_path=None):
-    """
-    Reads in a list of image paths, draws the oriented bounding boxes from the corresponding boxes_list
-    on each image, labels each box using the corresponding net_corrs mapping, and displays the images
-    side by side (left to right) in one plot.
-    
-    Args:
-        img_list (list[str]): List of file paths for the images.
-        boxes_list (list[np.ndarray]): List where each element is an array of bounding boxes for the corresponding image.
-            Each bounding box is expected to be in a format that can be reshaped into 4 points (4,2).
-        net_corrs (list[np.ndarray or list]): List where net_corrs[i][j] gives the label for the jth box in the ith image.
-        save_path (str): Optional. File path to save the resulting plot.
-    """
 
-    # Load the background image (assumed to be in the current working directory)
-    bg = cv2.imread("pybullet_env/icp/whale_data/blank_ocean.jpg")
-    if bg is None:
-        print("Error: Unable to load background.jpg")
-        return
-    bg = cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)
-    bg_h, bg_w = bg.shape[:2]
-    crop_width = 1920
-    crop_height = 1920
-    center_x, center_y = bg_w // 2, bg_h // 2
-    x1 = max(0, center_x - crop_width // 2)
-    x2 = min(bg_w, center_x + crop_width // 2)
-    y1 = max(0, center_y - crop_height // 2)
-    y2 = min(bg_h, center_y + crop_height // 2)
-    bg = bg[y1:y2, x1:x2]
+# ------------------------------------------------------------------
+# 2. main plotting routine – uses the new helper
+# ------------------------------------------------------------------
+def plot_boxed_images(img_list, boxes_list, net_corrs,
+                      save_path=None, img_data=None,
+                      plot_title="Current ICP Iteration"):
+    if img_data is None:
+        n_images = len(img_list)
+    else:
+        n_images = len(img_data)
 
-    n_images = len(img_list)
-    _, axes = plt.subplots(1, n_images, figsize=(6 * n_images, 6))
-    # If only one image, make axes iterable.
+    fig, axes = plt.subplots(1, n_images, figsize=(6 * n_images, 6))
     if n_images == 1:
         axes = [axes]
 
-
-    # Create a colormap that will generate a unique color for each box index.
     cmap = plt.cm.get_cmap("tab20")
 
     for i in range(n_images):
-        # First, display the background image.
-        axes[i].imshow(bg)
-        # Read and convert the image from BGR to RGB.
-        image = cv2.imread(img_list[i])
-        if image is None:
+
+        # ------------------------------------------------------------------
+        # read / convert / add transparency           (<<< changed lines)
+        # ------------------------------------------------------------------
+        image_bgr = cv2.imread(img_list[i]) if img_data is None else img_data[i]
+        if image_bgr is None:
             print(f"Error: Unable to read image {img_list[i]}")
             continue
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = make_black_transparent(image) 
-        # Overlay the actual image with a slight transparency (optional).
-        axes[i].imshow(image, alpha=0.95)
-        axes[i].axis("off")
-        # axes[i].set_title(f"Time {frames[i]} Seconds", pad=20)
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        image_rgba = make_black_transparent(image_rgb)
 
-        # For each bounding box in this image:
+        # show the image – no extra α, no interpolation artefacts
+        axes[i].imshow(image_rgba, interpolation='nearest')
+        axes[i].axis("off")
+
+        # title
+        axes[i].set_title("Target Image" if i == 0 else plot_title)
+
+        # ------------------------------------------------------------------
+        # draw oriented bounding boxes (unchanged)
+        # ------------------------------------------------------------------
         for j, box in enumerate(boxes_list[i]):
             pts = np.array(box).reshape(4, 2)
-            # Draw the colored polygon (edge color remains 'red' here; adjust if needed).
-            color_num = net_corrs[i][j]
-            color = cmap(color_num % cmap.N + 1)
-            face_color = (color[0], color[1], color[2], 0.3)
-            poly = patches.Polygon(pts, closed=True, edgecolor=color, facecolor=face_color, linewidth=2)
+            color_idx = net_corrs[i][j]
+            color = cmap(color_idx % cmap.N + 1)
+            face_color = (*color[:3], 0.3)
+            poly = patches.Polygon(pts, closed=True,
+                                   edgecolor=color,
+                                   facecolor=face_color,
+                                   linewidth=2)
             axes[i].add_patch(poly)
-            # Compute the centroid of the box for labeling.
-            # centroid = np.mean(pts, axis=0)
-            # # Label the box using the net_corr value for this image and box index.
-            # axes[i].text(centroid[0], centroid[1], str(net_corrs[i][j]),
-            #              color='yellow', fontsize=12, ha='center', va='center')
 
     plt.tight_layout(pad=0.03, w_pad=0.03, h_pad=0.03, rect=[0, 0, 1, 0.95])
+
+    fig.subplots_adjust(wspace=0, hspace=0)        # remove space between subplots
+    fig.patch.set_alpha(0) 
     if save_path:
-        plt.savefig(save_path, dpi=300)
-    # plt.close()
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0, dpi=300)
 
 def plot_success_rate_histogram(arr, num_agents, save_filename="pybullet_env/icp/histogram.pdf"): # Added save_filename parameter
     """
@@ -143,7 +141,7 @@ def plot_success_rate_histogram(arr, num_agents, save_filename="pybullet_env/icp
 
 
 
-def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=None, custom_rotation_center=None):
+def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=None, custom_rotation_center=None, save=False):
     # Read the image from the specified directory
     if in_img is None:
         image = cv2.imread(os.path.join(save_dir, img_file))
@@ -153,16 +151,11 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=No
     else:
         image = in_img 
 
-    # vary padding to simulate taking images from different heights
-    # padding = random.randint(250, 500)
-    padding = 300
-    image = cv2.copyMakeBorder(image, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=[0, 0, 0])
-
     h, w = image.shape[:2]
     
     # Define region dimensions (width x height)
-    region_width = 2160 
-    region_height = 2160 
+    region_width = w 
+    region_height = h 
     
     # Calculate center of the image
     center_x, center_y = w // 2, h // 2
@@ -198,15 +191,16 @@ def rotate_image(img_file, rot_angle, save_dir, in_img=None, custom_save_file=No
     new_image[y1:y2, x1:x2] = cropped_rotated
     
     # Save the rotated image. The filename includes the rotation angle.
-    if custom_save_file:
-        cv2.imwrite(custom_save_file, new_image)
-    else:
-        save_file = os.path.join(save_dir, f"rotated_{rot_angle}_{img_file}")
-        cv2.imwrite(save_file, new_image)
-        # print(f"Rotated image saved to {save_file}")
+    if save:
+        if custom_save_file:
+            cv2.imwrite(custom_save_file, new_image)
+        else:
+            save_file = os.path.join(save_dir, f"rotated_{rot_angle}_{img_file}")
+            cv2.imwrite(save_file, new_image)
+            # print(f"Rotated image saved to {save_file}")
     return new_image
 
-def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None, save=False):
+def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None, save=False, vary_height=False, padding=0):
     if in_img is None:
         image = cv2.imread(os.path.join(save_dir, img_file))
         if image is None:
@@ -215,12 +209,21 @@ def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None
     else:
         image = in_img 
 
+    # vary padding to simulate taking images from different heights
+    if not vary_height:
+        padding = 0
+    image = cv2.copyMakeBorder(image, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
+    # resize image 
+    target_size = (2160, 2160)
+    image = cv2.resize(image, target_size, interpolation=cv2.INTER_AREA)
+
     h, w = image.shape[:2]
     
     # Define the dimensions of the center region.
-    region_width = 2160 
-    region_height = 2160 
-    
+    region_width = w 
+    region_height = h 
+
     # Calculate the center point.
     center_x, center_y = w // 2, h // 2
     
@@ -250,7 +253,7 @@ def translate_image(img_file, x, y, save_dir, in_img=None, custom_save_file=None
         else:
             save_file = os.path.join(save_dir, f"translated_{x}_{y}" + img_file)
             cv2.imwrite(save_file, new_image)
-    return new_image
+    return new_image 
 
 def shear_image(img_file, shear_angle, save_dir, in_img=None):
     # If no in_img passed in, read from disk
@@ -289,29 +292,38 @@ def shear_image(img_file, shear_angle, save_dir, in_img=None):
     cv2.imwrite(out_path, sheered_image)
     print(f"Sheered image saved to {out_path}")
 
-def generate_augmentations(img_dir, num_images=5):
-    # CONFIG: TOGGLE FOR DIFFERENT AUGMENTATIONS
+# def generate_augmentations(img_dir, num_images=5):
+#     # CONFIG: TOGGLE FOR DIFFERENT AUGMENTATIONS
+#     rotation_angle_range = [-180, 180]
+#     translation_range = [0, 0]
+#     base_img_path = "base_img.jpg"
+
+#     for _ in range(num_images):
+#         # translation = np.random.randint(translation_range[0], translation_range[1], size=2)
+#         rotation_angle = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+#         translated_img = translate_image(base_img_path, 0, 0, img_dir)
+#         rotate_image(base_img_path, rotation_angle, img_dir, in_img=translated_img)
+
+#     # for img_file in os.listdir(img_dir):
+#     #     translation = np.random.randint(translation_range[0], translation_range[1], size=2)
+#     #     shear_angle = np.random.randint(shear_angle_range[0], shear_angle_range[1])
+#     #     rotation_angle1 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+#     #     rotation_angle2 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+#     #     translated_img = translate_image(img_file, translation[0], translation[1], img_dir)
+#     #     rotate_image(img_file, rotation_angle1, img_dir, in_img=translated_img)
+#     #     rotate_image(img_file, rotation_angle2, img_dir, in_img=translated_img)
+#     #     shear_image(img_file, shear_angle, img_dir)
+
+def generate_one_augmentation(img_dir, in_img=None, vary_heights=False):
     rotation_angle_range = [-180, 180]
-    translation_range = [0, 0]
+    translation_range = [-700, 700]
     base_img_path = "base_img.jpg"
+    rotation_angle = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
+    dx, dy = np.random.randint(translation_range[0], translation_range[1], size=2)
+    translated_img = translate_image(base_img_path, dx, dy, img_dir, in_img=in_img, vary_height=vary_heights, save=False)
+    return rotate_image(base_img_path, rotation_angle, img_dir, in_img=translated_img, save=False)
 
-    for _ in range(num_images):
-        # translation = np.random.randint(translation_range[0], translation_range[1], size=2)
-        rotation_angle = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
-        translated_img = translate_image(base_img_path, 0, 0, img_dir)
-        rotate_image(base_img_path, rotation_angle, img_dir, in_img=translated_img)
-
-    # for img_file in os.listdir(img_dir):
-    #     translation = np.random.randint(translation_range[0], translation_range[1], size=2)
-    #     shear_angle = np.random.randint(shear_angle_range[0], shear_angle_range[1])
-    #     rotation_angle1 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
-    #     rotation_angle2 = np.random.randint(rotation_angle_range[0], rotation_angle_range[1])
-    #     translated_img = translate_image(img_file, translation[0], translation[1], img_dir)
-    #     rotate_image(img_file, rotation_angle1, img_dir, in_img=translated_img)
-    #     rotate_image(img_file, rotation_angle2, img_dir, in_img=translated_img)
-    #     shear_image(img_file, shear_angle, img_dir)
-
-def extract_boxes(img_0_path, img_1_path):
+def extract_boxes(img_0_path, img_1_path, model_conf_threshold=0.5):
     if not os.path.exists("pybullet_env/icp/icp_plots"):
         os.makedirs("pybullet_env/icp/icp_plots")
     
@@ -329,7 +341,7 @@ def extract_boxes(img_0_path, img_1_path):
         img_0_path = f"pybullet_env/icp/img_0.jpg"
         img_1_path = f"pybullet_env/icp/img_1.jpg"
         results = model(source=[img_0_path, img_1_path],
-                        conf=0.55,
+                        conf=model_conf_threshold,
                         imgsz=640,
                         classes=[0],
                         device="cpu",
@@ -340,9 +352,12 @@ def extract_boxes(img_0_path, img_1_path):
         num_boxes1 = vid1_boxes.shape[0]
         num_boxes2 = vid2_boxes.shape[0]
 
-    correct = num_boxes1 == num_boxes2 
-    lowest_conf = min(results[0].obb.conf.numpy().min(),
-                      results[1].obb.conf.numpy().min())
+    correct = num_boxes1 == num_boxes2 and min(num_boxes1, num_boxes2) > 0 
+    if results[0].obb.conf.numpy().size > 0 and results[1].obb.conf.numpy().size > 0:
+        lowest_conf = min(results[0].obb.conf.numpy().min(),
+                        results[1].obb.conf.numpy().min())
+    else:
+        lowest_conf = None
     num_whales = max(num_boxes1, num_boxes2)
     return vid1_boxes, vid2_boxes, correct, num_whales, lowest_conf
 
@@ -479,116 +494,481 @@ def pairwise_box_plots(img_dir):
     print(failed_boxes)
     print(total)
 
-def eval_whale_icp(num_runs=20, num_agents=5):
-    img_dir = "pybullet_env/icp/whale_data/yolo_dataset/images/val"
-    base_img_list = os.listdir(img_dir) 
-    conf_accuracy_database = defaultdict(list)
-    icp_accuracy_database = defaultdict(list)
+def eval_whale_model(model_conf_threshold=0.5, num_augmentations=100):
+    """
+    Evaluates the YOLO model's accuracy in detecting the correct number of whales.
+    It processes images from a specified directory, generates augmentations for each,
+    runs the model, and compares detected boxes against the expected number from the filename.
 
-    for _ in tqdm(range(num_runs)):
-        # generate test set of images
-        reset = False
-        if os.path.exists("pybullet_env/icp/whale_data/whale_icp_eval"):
-            files = os.listdir("pybullet_env/icp/whale_data/whale_icp_eval")
-            for file in files:
-                os.remove(os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", file))
-        else:
-            os.makedirs("pybullet_env/icp/whale_data/whale_icp_eval")
+    Args:
+        model_conf_threshold (float): Confidence threshold for YOLO predictions.
+        num_augmentations (int): Number of augmentations to generate per base image.
+    """
+    input_dir = "pybullet_env/icp/whale_data/final_model_eval"
+    temp_dir = "pybullet_env/icp/whale_data/whale_icp_eval"
+    output_dir = "pybullet_env/icp/whale_data/eval_data_json"
+    output_filename = os.path.join(output_dir, f"model_accuracy_conf_{model_conf_threshold}.json")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # results[num_whales] = {'correct': 0, 'total': 0}
+    results_agg = defaultdict(lambda: {'correct': 0, 'total': 0})
+    
+    # Load YOLO model
+    model_file = "pybullet_env/icp/whale_data/last.pt"
+    model = YOLO(model_file)
+
+    # Regex to parse filename
+    filename_pattern = re.compile(r"(\d+)_whale_(\d+)\.png")
+
+    base_image_files = [f for f in os.listdir(input_dir) if filename_pattern.match(f)]
+    
+    print(f"Starting model evaluation with conf={model_conf_threshold}...")
+    for base_filename in base_image_files:
+        match = filename_pattern.match(base_filename)
+        if not match:
+            print(f"Warning: Skipping file with unexpected name format: {base_filename}")
+            continue
+            
+        expected_num_whales = int(match.group(1))
+        base_img_path_src = os.path.join(input_dir, base_filename)
         
-        base_img_path = random.choice(base_img_list)
-        base_img_path = os.path.join(img_dir, base_img_path)
-        base_img = cv2.imread(base_img_path)
-        cv2.imwrite("pybullet_env/icp/whale_data/whale_icp_eval/base_img.jpg", base_img)
-        generate_augmentations("pybullet_env/icp/whale_data/whale_icp_eval", num_images=num_agents)
+        # --- Prepare Augmentations ---
+        # Clear temp directory
+        for f in os.listdir(temp_dir):
+            os.remove(os.path.join(temp_dir, f))
+            
+        # Copy base image to temp dir as base_img.jpg
+        base_img_path_dst = os.path.join(temp_dir, "base_img.jpg")
+        base_img = cv2.imread(base_img_path_src)
+        if base_img is None:
+            print(f"Error reading base image: {base_img_path_src}")
+            continue
+        cv2.imwrite(base_img_path_dst, base_img)
+        
+        # Generate augmentations
+        for _ in tqdm(range(num_augmentations), desc=f"Processing {base_filename}"):
+            augmented_img = generate_one_augmentation(temp_dir)
+            try:
+                with torch.no_grad():
+                    yolo_results = model(source=augmented_img,
+                                        conf=model_conf_threshold,
+                                        imgsz=640,
+                                        classes=[0],
+                                        device=device,
+                                        verbose=False,
+                                        stream=False) # Process as batch if stream=False
 
-        # calculate rot_icp correlations
-        imgs = os.listdir("pybullet_env/icp/whale_data/whale_icp_eval")
-        correlations = []
-        icp_boxes = []
-        imgs.remove("base_img.jpg")
-        try:
-            for i in range(len(imgs)):
-                img_0_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[i]) 
-                img_1_path = os.path.join("pybullet_env/icp/whale_data/whale_icp_eval", imgs[(i+1) % len(imgs)])
-                boxes0, boxes1, correct, num_whales, lowest_conf = extract_boxes(img_0_path, img_1_path)
-                if correct:
-                    icp_boxes.append([boxes0, boxes1])
-                else:
-                    reset = True
-                
-                # get threshold
-                bucket = 0
-                if lowest_conf < 0.3:
-                    bucket = 0
-                elif 0.3 <= lowest_conf < 0.5: # Use <= for lower bound
-                    bucket = 1
-                elif 0.5 <= lowest_conf < 0.7: # Use <= for lower bound
-                    bucket = 2
-                elif lowest_conf >= 0.7: # Use >= for lower bound
-                    bucket = 3
-                # Convert lowest_conf to standard float here
-                conf_accuracy_database[bucket].append({"num_whales": num_whales, "lowest_conf": float(lowest_conf), "correct": correct})
+                for result in yolo_results:
+                    detected_num_boxes = 0
+                    if result.obb is not None and result.obb.xyxyxyxy is not None:
+                        detected_num_boxes = len(result.obb.xyxyxyxy.cpu().numpy())
+                    
+                    results_agg[expected_num_whales]['total'] += 1
+                    if detected_num_boxes == expected_num_whales:
+                        results_agg[expected_num_whales]['correct'] += 1
 
-            if reset:
-                # reset run, don't do cyclical ICP
+            except Exception as e:
+                print(f"Error during YOLO prediction for files related to {base_filename}: {e}")
+
+
+    # Calculate final accuracies
+    final_results = {}
+    for num_whales, counts in results_agg.items():
+        total = counts['total']
+        correct = counts['correct']
+        accuracy = (correct / total) if total > 0 else 0
+        final_results[num_whales] = {
+            'correct': correct,
+            'total': total,
+            'accuracy': accuracy
+        }
+        print(f"Whales: {num_whales}, Correct: {correct}, Total: {total}, Accuracy: {accuracy:.4f}")
+
+    # Save results to JSON
+    try:
+        # Ensure keys are strings for JSON
+        final_results_serializable = {str(k): v for k, v in final_results.items()}
+        with open(output_filename, "w") as f:
+            json.dump(final_results_serializable, f, indent=2)
+        print(f"Model evaluation results saved to {output_filename}")
+    except Exception as e:
+        print(f"Error saving results to JSON: {e}")
+
+
+def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3, vary_heights=False, record=False):
+    """
+    Evaluates ICP accuracy across varying numbers of agents (2, 4, 8, 16).
+    For each agent count, it selects random base images, generates augmentations,
+    checks YOLO box count consistency, and then runs cyclical ICP if consistent.
+    Uses a fixed YOLO confidence threshold of 0.3.
+
+    Args:
+        num_base_images_per_agent_count (int): Number of random base images to test for each agent count.
+    """
+    img_dir = "pybullet_env/icp/whale_data/final_model_eval"
+    temp_dir = "pybullet_env/icp/whale_data/whale_icp_eval"
+    output_dir = "pybullet_env/icp/whale_data/eval_data_json"
+    output_filename = os.path.join(output_dir, f"icp_accuracy_vs_agents_conf_{model_conf_threshold}_vary_heights_{vary_heights}.json")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    agent_counts = [2, 4, 8, 16]
+    
+    # overall_results[num_agents][num_whales] = [list of booleans indicating ICP success]
+    overall_results = defaultdict(lambda: defaultdict(list))
+    
+    # Load YOLO model
+    model_file = "pybullet_env/icp/whale_data/last.pt"
+    model = YOLO(model_file)
+    
+    # Regex to parse filename
+    filename_pattern = re.compile(r"(\d+)_whale_(\d+)\.png")
+    
+    all_base_image_files = [f for f in os.listdir(img_dir) if filename_pattern.match(f)]
+    if not all_base_image_files:
+        print(f"Error: No base images found in {img_dir}")
+        return
+
+    print(f"Starting ICP evaluation with conf={model_conf_threshold}...")
+    
+    for num_agents in agent_counts:
+        print(f"\n--- Evaluating with {num_agents} agents ---")
+        
+        # Select random base images for this agent count
+        selected_base_files = random.sample(all_base_image_files, min(num_base_images_per_agent_count, len(all_base_image_files)))
+        
+        for base_filename in tqdm(selected_base_files, desc=f"Agent Count {num_agents}"):
+            match = filename_pattern.match(base_filename)
+            if not match: continue # Should not happen due to pre-filtering
+            
+            expected_num_whales = int(match.group(1))
+            base_img_path_src = os.path.join(img_dir, base_filename)
+
+            # --- Prepare Augmentations ---
+            # Clear temp directory
+            for f in os.listdir(temp_dir):
+                os.remove(os.path.join(temp_dir, f))
+            
+            # Copy base image
+            base_img_path_dst = os.path.join(temp_dir, "base_img.jpg")
+            base_img = cv2.imread(base_img_path_src)
+            if base_img is None: 
                 continue
+            # cv2.imwrite(base_img_path_dst, base_img)
+
+            # Generate augmentations and store paths/results
+            augmented_data = [] # List to store {'path': path, 'boxes': boxes, 'box_count': count}
+            images = []
+            all_counts_match = True
             
-            # perform ICP on all pairs
-            for i in range(len(icp_boxes)):
-                box_0 = icp_boxes[i][0]
-                box_1 = icp_boxes[i][1]
-                _, corr, _ = rot_icp(box_1, box_0, use_point=False)
-                correlations.append(corr.tolist())
+            for n in range(num_agents):
+                aug_filename = f"aug_{n}.png"
+                aug_filepath = os.path.join(temp_dir, aug_filename)
+                # Generate one augmentation and save it
+                augmented_img = generate_one_augmentation(temp_dir, in_img=base_img, vary_heights=vary_heights) # Assumes this returns the image array
+                if record:
+                    images.append(augmented_img)
 
-            net_corrs = []
-            for i in range(len(correlations)):
-                composite = np.arange(len(correlations[i]))
-                for j in range(i, -1, -1):
-                    new_composite = np.zeros(len(composite), dtype=int)
-                    for k in range(len(composite)):
-                        new_composite[correlations[j][k]] = composite[k]
-                    composite = new_composite.copy()
-                net_corrs.append(composite)
+                # Run YOLO on the single augmented image
+                try:
+                    with torch.no_grad():
+                        yolo_result = model(source=augmented_img,
+                                            conf=model_conf_threshold,
+                                            imgsz=640,
+                                            classes=[0],
+                                            device=device,
+                                            verbose=False)[0] # Get the first (only) result
+
+                    detected_boxes = None
+                    detected_count = 0
+                    if yolo_result.obb is not None and yolo_result.obb.xyxyxyxy is not None:
+                        detected_boxes = yolo_result.obb.xyxyxyxy.cpu().numpy()
+                        detected_count = len(detected_boxes)
+
+                    augmented_data.append({'path': aug_filepath, 'boxes': detected_boxes, 'box_count': detected_count})
+
+                    if detected_count != expected_num_whales:
+                        all_counts_match = False
+                        # print(f"Mismatch: Expected {expected_num_whales}, got {detected_count} for {aug_filepath}")
+                        break # No need to check further augmentations for this base image
+
+                except Exception as e:
+                    print(f"Error during YOLO prediction for image number {n}: {e}")
+                    all_counts_match = False
+                    break
             
-            front = net_corrs.pop()
-            net_corrs.insert(0, front)
-            icp_correct = net_corrs[0].tolist() == [i for i in range(len(net_corrs[0]))]
-            # Ensure num_whales is a standard int if it comes from numpy
-            icp_accuracy_database[int(num_whales)].append(icp_correct) 
+            # --- Run Cyclical ICP if counts matched ---
+            if all_counts_match and expected_num_whales > 0:
+                correlations = []
+                icp_boxes_list = [data['boxes'] for data in augmented_data]
 
-        except Exception as e:
-            print(str(e))
+                # try:
+                for i in range(num_agents):
+                    boxes_0 = icp_boxes_list[i]
+                    boxes_1 = icp_boxes_list[(i + 1) % num_agents]
+                    
+                    # Ensure boxes are not None before ICP
+                    if boxes_0 is None or boxes_1 is None:
+                            raise ValueError("Cannot perform ICP with None boxes.")
 
-    # write stuff to json files
-    # Ensure keys are strings for JSON compatibility if they are numpy ints
-    conf_accuracy_database_serializable = {str(k): v for k, v in conf_accuracy_database.items()}
-    icp_accuracy_database_serializable = {str(k): v for k, v in icp_accuracy_database.items()}
+                    if not record:
+                        _, corr, _ = rot_icp(boxes_1, boxes_0, use_point=False)
+                    else:
+                        _, corr, _, recorded_clouds = rot_icp(boxes_1, boxes_0, use_point=False, record=True)
 
-    with open(f"pybullet_env/icp/whale_data/conf_accuracy_num_agents{num_agents}.json", "w") as f:
-        json.dump(conf_accuracy_database_serializable, f, indent=2) # Added indent for readability
-    with open(f"pybullet_env/icp/whale_data/icp_accuracy_num_agents{num_agents}.json", "w") as f:
-        json.dump(icp_accuracy_database_serializable, f, indent=2) # Added indent for readability
+                        # plot images of rotations
+                        img0 = images[i]
+                        img1 = images[(i + 1) % num_agents]
+                        # print("RECORDED CLOUDS")
+                        # print(recorded_clouds)
+                        for rot_theta, global_center, transforms, _, point_clouds in enumerate(recorded_clouds):
+                            # calculate net transforms we need to perform
+                            rot_theta_degs = np.rad2deg(rot_theta)
+                            # rotate image 1
+                            rotated_img1 = rotate_image(base_filename, rot_theta_degs, temp_dir, in_img=img1, save=False)
+                            boxes0 = icp_boxes_list[i]
+                            boxes1 = point_clouds[-1] 
+                            # print(boxes0)
+                            # print(boxes1)
+                            # convert boxes1 coordinates to cv2 image coordinates
+                            boxes1 = boxes1 + global_center
+                            plot_pair_boxes(boxes0, boxes1, corr, f"pybullet_env/icp/whale_data/icp_whale_height_variation/{base_filename}_{rot_theta_degs}.png", [img0, rotated_img1])
 
-    print("RUN: ", num_agents)
+                        assert False
+                    correlations.append(corr.tolist())
 
+                # Calculate net correspondence 
+                net_corrs = []
+                for i in range(len(correlations)):
+                    composite = np.arange(len(correlations[i]))
+                    for j in range(i, -1, -1):
+                        new_composite = np.zeros(len(composite), dtype=int)
+                        for k in range(len(composite)):
+                            new_composite[correlations[j][k]] = composite[k]
+                        composite = new_composite.copy()
+                    net_corrs.append(composite)
+
+                # The final net correspondence after all steps (0 to num_agents-1)
+                final_net_corr = net_corrs[-1] 
+                
+                # Check if it's the identity permutation
+                icp_correct = final_net_corr.tolist() == list(range(len(final_net_corr)))
+                overall_results[num_agents][expected_num_whales].append(icp_correct)
+
+                # except Exception as e:
+                #     print(f"Error during ICP for {base_filename} with {num_agents} agents: {e}")
+                #     # Optionally record this as a failure? Depends on desired analysis.
+                #     overall_results[num_agents][expected_num_whales].append(False) 
+            elif not all_counts_match:
+                 # Record failure if box counts didn't match? Or just skip? Skipping for now.
+                 pass
+
+
+    # Save aggregated results to JSON
+    try:
+        # Convert inner defaultdict to dict for JSON serialization
+        serializable_results = {
+            str(agents): {str(whales): results for whales, results in whale_dict.items()}
+            for agents, whale_dict in overall_results.items()
+        }
+        with open(output_filename, "w") as f:
+            json.dump(serializable_results, f, indent=2)
+        print(f"\nICP evaluation results saved to {output_filename}")
+    except Exception as e:
+        print(f"Error saving aggregated results to JSON: {e}")
+
+def eval_icp_points(num_runs=1, noise_level=20, height_variation=0.5, record=False):
+    """
+    Loads the vertex coordinates for all rectangles from a randomly selected 
+    label file in the specified directory.
+    """
+    label_dir = "pybullet_env/icp/whale_data/final_model_eval_labels"
+    output_dir = "pybullet_env/icp/whale_data/eval_data_json"
+    all_label_files = [f for f in os.listdir(label_dir) if os.path.isfile(os.path.join(label_dir, f))]
+    if not all_label_files:
+        print(f"Error: No label files found in {label_dir}")
+        return None
+
+    filename_pattern = re.compile(r"(\d+)_whale_(\d+)\.txt")
+    overall_results = defaultdict(lambda: defaultdict(list))
+        
+    for _ in range(num_runs):
+        for base_filename in tqdm(all_label_files):
+            # Select a random file
+            file_path = os.path.join(label_dir, base_filename)
+            match = filename_pattern.match(base_filename)
+            if not match: continue # Should not happen due to pre-filtering
+            num_whales = int(match.group(1))
+
+            rectangles = []
+            with open(file_path, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) == 9: # Expecting class label + 8 coordinates
+                        try:
+                            # Extract coordinates, convert to float, and reshape
+                            coords = np.array([float(p) for p in parts[1:]])
+                            rectangle_points = coords.reshape((4, 2))
+                            rectangles.append(rectangle_points)
+                        except ValueError:
+                            print(f"Warning: Could not parse line in {base_filename}: {line.strip()}")
+                    else:
+                            print(f"Warning: Skipping malformed line in {base_filename}: {line.strip()}")
+
+            if not rectangles:
+                print(f"Warning: No valid rectangles found in {base_filename}")
+                return None
+
+            # Stack the list of (4, 2) arrays into a single (N, 4, 2) array and center points around origin
+            all_points = np.stack(rectangles)
+            all_points = 2160 * all_points
+            global_center = np.mean(all_points.reshape(-1, 2), axis=0)
+            all_points = all_points - global_center
+
+            # get set of random transforms
+            all_points_transforms = [all_points] 
+            for _ in range(15):
+                random_translation = np.random.randint(-1000, 1000, size=2)
+                rot_theta = np.deg2rad(np.random.randint(-180, 180))
+                R = np.array([[np.cos(rot_theta), -np.sin(rot_theta)], [np.sin(rot_theta), np.cos(rot_theta)]])
+                transformed_points = []
+
+                # apply rotations
+                for box in all_points:
+                    transformed_box = []
+                    for point in box:
+                        point_array = np.array(point)
+                        transformed_point = np.dot(R, point_array)
+                        transformed_box.append(transformed_point.tolist())
+                    transformed_points.append(transformed_box)
+
+                transformed_points = np.array(transformed_points)
+
+                # apply noise and apply heigh variation            
+                height_change_constant = np.random.uniform(1 - height_variation, 1)
+                scale_direction = random.choice([-1, 1])
+                if scale_direction == -1:
+                    height_change_constant = 1 / height_change_constant 
+                noise = np.random.normal(0, noise_level, all_points.shape)
+                transformed_points = transformed_points + noise
+                transformed_points = transformed_points * height_change_constant 
+
+                # apply translations
+                transformed_points = transformed_points + random_translation
+                all_points_transforms.append(transformed_points)
+
+            for num_agents in [2, 4, 8, 16]:
+                cyclical_icp_points = all_points_transforms[:num_agents]
+                # cyclical ICP 
+                correlations = []
+                for i in range(num_agents):
+                    boxes_0 = cyclical_icp_points[i]
+                    boxes_1 = cyclical_icp_points[(i + 1) % num_agents]
+                    
+                    # Ensure boxes are not None before ICP
+                    if boxes_0 is None or boxes_1 is None:
+                        raise ValueError("Cannot perform ICP with None boxes.")
+
+                    if i == 0 and record:
+                        _, corr, _, recorded_clouds = rot_icp(boxes_1, boxes_0, use_point=False, record=True)     
+                        # plot recorded cloud
+                        for sample_rot_theta, _, _, iter_correlations, point_clouds in recorded_clouds:
+                            for cloud_idx, cloud in enumerate(point_clouds):
+                                corr = iter_correlations[cloud_idx]
+                                plot_rectangles(f"Noise Level rot theta {sample_rot_theta} index {cloud_idx}", boxes_0, cloud, corr, sample_rot_theta)
+                    else:
+                        _, corr, _ = rot_icp(boxes_1, boxes_0, use_point=False, record=False)
+                    correlations.append(corr.tolist())
+                
+                # Calculate net correspondence 
+                net_corrs = []
+                for i in range(len(correlations)):
+                    composite = np.arange(len(correlations[i]))
+                    for j in range(i, -1, -1):
+                        new_composite = np.zeros(len(composite), dtype=int)
+                        for k in range(len(composite)):
+                            new_composite[correlations[j][k]] = composite[k]
+                        composite = new_composite.copy()
+                    net_corrs.append(composite)
+
+                # The final net correspondence after all steps (0 to num_agents-1)
+                final_net_corr = net_corrs[-1] 
+                
+                # Check if it's the identity permutation
+                icp_correct = final_net_corr.tolist() == list(range(len(final_net_corr)))
+                overall_results[num_agents][num_whales].append(icp_correct)
+    
+    # save aggregated results to JSON
+    output_filename = os.path.join(output_dir, f"icp_point_test_noiselevel_{noise_level}_heightvar_{height_variation}.json")
+    try:
+        # Convert inner defaultdict to dict for JSON serialization
+        serializable_results = {
+            str(agents): {str(whales): results for whales, results in whale_dict.items()}
+            for agents, whale_dict in overall_results.items()
+        }
+        with open(output_filename, "w") as f:
+            json.dump(serializable_results, f, indent=2)
+        print(f"\nICP evaluation results saved to {output_filename}")
+    except Exception as e:
+        print(f"Error saving aggregated results to JSON: {e}")
+
+def plot_pair_boxes(boxes0, boxes1, corr, save_path, img_data):
+    """
+    Plots two images side by side with box polygons overlaid.
+    
+    Args:
+        boxes0 (np.ndarray): Array of shape (N, 4, 2) for scene 0.
+        boxes1 (np.ndarray): Array of shape (N, 4, 2) for scene 1.
+        corr (list or np.ndarray): Mapping from boxes0 indices to boxes1 indices.
+        save_path (str): File path to save the final plot.
+        img_data (list): List of two cv2 image arrays.
+    """
+    import matplotlib.pyplot as plt
+    import cv2
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    
+    # Plot Scene 0: draw each box polygon and label with its index
+    ax0 = axes[0]
+    img0_rgb = cv2.cvtColor(img_data[0], cv2.COLOR_BGR2RGB)
+    ax0.imshow(img0_rgb)
+    for i, box in enumerate(boxes0):
+        centroid = box.mean(axis=0)
+        polygon = plt.Polygon(box, fill=None, edgecolor='red', lw=2)
+        ax0.add_patch(polygon)
+        ax0.text(centroid[0], centroid[1], f"{i}", color='white', fontsize=12,
+                 ha='center', va='center')
+    ax0.set_title("Scene 0")
+    ax0.axis("off")
+    
+    # Plot Scene 1: use corr to map each box in boxes0 to the corresponding box in boxes1
+    ax1 = axes[1]
+    img1_rgb = cv2.cvtColor(img_data[1], cv2.COLOR_BGR2RGB)
+    ax1.imshow(img1_rgb)
+    for i, box_index in enumerate(corr):
+        box = boxes1[box_index]
+        centroid = box.mean(axis=0)
+        polygon = plt.Polygon(box, fill=None, edgecolor='red', lw=2)
+        ax1.add_patch(polygon)
+        ax1.text(centroid[0], centroid[1], f"{i}", color='white', fontsize=12,
+                 ha='center', va='center')
+    ax1.set_title("Scene 1")
+    ax1.axis("off")
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
 
 if __name__ == "__main__":
-    # generate_augmentations("pybullet_env/icp/whale_data/icp_experiments/shot1/")
-    # pairwise_box_plots("pybullet_env/icp/whale_data/icp_experiments/shot1/")
-    # find_num_boxes("pybullet_env/icp/whale_data/icp_experiments/shot3")
-
-    # img_dir = "pybullet_env/icp/whale_data/icp_experiments/shot3"
-    # dir_files = os.listdir(img_dir)
-    # img_list = []
-    # for _ in range(5):
-    #     img_list.append(os.path.join(img_dir, random.choice(dir_files)))
-    # img_list = ["pybullet_env/icp/whale_data/icp_experiments/shot3/15_1688827660979_frame750.jpg",
-    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-119_19_1688827660979_frame950.jpg",
-    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_-44_15_1688827660979_frame750.jpg",
-    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/translated_-186_-14317_1688827660979_frame850.jpg",
-    #             "pybullet_env/icp/whale_data/icp_experiments/shot3/rotated_95_19_1688827660979_frame950.jpg"]
-    # find_num_boxes("pybullet_env/icp/whale_data/icp_experiments/shot3")
     print("STARTING PROGRAM")
-    for i in range(2, 20, 2):
-        eval_whale_icp(num_runs=10, num_agents=i)
+    eval_whale_icp(100, model_conf_threshold=0.3, vary_heights=False, record=True)
+    # eval_icp_points(noise_level=60, height_variation=0.5, record=True)
+    # for noise_level in [0, 20, 40, 60, 100]:
+    #     eval_icp_points(noise_level=noise_level, height_variation=0.5)
+
+    # for height_variation in [0.1, 0.3, 0.5, 0.7, 0.9, 0.95]:
+    #     eval_icp_points(noise_level=0, height_variation=height_variation)
+
 

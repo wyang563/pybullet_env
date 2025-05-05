@@ -2,9 +2,11 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from numpy.linalg import norm, eigh 
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import random
 from sklearn.neighbors import NearestNeighbors
 import json
+import os
 
 def plot_point_clouds(index, points1, points2, indices, run_number):
     # centroids1 = np.mean(points1, axis=1)
@@ -24,11 +26,48 @@ def plot_point_clouds(index, points1, points2, indices, run_number):
         plt.text(x, y, str(i), color='blue', fontsize=8, ha='center', va='bottom')
     # plt.scatter(centroids1[:, 0], centroids1[:, 1], color='red', label='Centroids 1')
     # plt.scatter(centroids2[:, 0], centroids2[:, 1], color='green', label='Centroids 2')
-    plt.title(f"Plot Point Clouds visualized {index}")
+    plt.title(f"Plot Point Clouds visualized: {index}")
 
     ax = plt.gca()
     ax.set_aspect('equal', adjustable='box')
     plt.savefig(f"pybullet_env/icp/icp_plots/point_clouds_{run_number}_{index}.png")
+    plt.close()
+
+def plot_rectangles(index, points1, points2, indices, run_number):
+    """
+    index: identifier for this plot
+    points1, points2: np.ndarray of shape (N,4,2) listing rectangle corner coords
+    indices: length-N array mapping each rectangle in points1 to a rectangle in points2
+    run_number: used in output filename
+    """
+    plt.figure(figsize=(6,6))
+    ax = plt.gca()
+    ax.set_aspect('equal', adjustable='box')
+
+    # draw rectangles
+    for i, rect in enumerate(points1):
+        poly = patches.Polygon(rect, closed=True, edgecolor='orange', fill=False, linewidth=2)
+        ax.add_patch(poly)
+        # centroid
+        c1 = rect.mean(axis=0)
+        ax.text(c1[0], c1[1], str(i), color='orange', fontsize=8, ha='center', va='center')
+
+    for j, rect in enumerate(points2):
+        poly = patches.Polygon(rect, closed=True, edgecolor='blue', fill=False, linewidth=2)
+        ax.add_patch(poly)
+        c2 = rect.mean(axis=0)
+        ax.text(c2[0], c2[1], str(j), color='blue', fontsize=8, ha='center', va='center')
+
+    # draw correspondences
+    for i, j in enumerate(indices):
+        c1 = points1[i].mean(axis=0)
+        c2 = points2[j].mean(axis=0)
+        ax.plot([c1[0], c2[0]], [c1[1], c2[1]], color='gray', linestyle='--', linewidth=1)
+
+    plt.title(f"Rectangles correspondence: {index}")
+    out_dir = "pybullet_env/icp/icp_plots"
+    os.makedirs(out_dir, exist_ok=True)
+    plt.savefig(f"{out_dir}/rectangles_{run_number}_{index}.png")
     plt.close()
 
 def best_fit_transform(A, B):
@@ -130,7 +169,7 @@ def calc_all_box_distance(boxes1, boxes2):
             flat_corr_indices[i * box_size + c] = box_size * j + corner_j
     return box_assign_dist, flat_corr_indices.ravel(), nearest_indices 
 
-def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, run_number=0, record_transforms=False):
+def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, record_transforms=False):
     assert A.shape == B.shape, "A and B must have the same shape"
 
     # Make points homogeneous, copy them to maintain the originals
@@ -177,9 +216,10 @@ def icp(A, B, max_iters=20, tolerance=0.0001, outlier_sigma=2, run_number=0, rec
         A = np.zeros((A.shape[0], box_size, 2))
         A = np.copy(org_src[:org_src.shape[0] - 1, :].T.reshape(-1, box_size, 2))
         # add data 
-        transforms.append(T.copy())
-        iter_correlations.append(correspondence_indices.copy())
-        point_clouds.append(A.copy())
+        if record_transforms:
+            transforms.append(T.copy())
+            iter_correlations.append(correspondence_indices.copy())
+            point_clouds.append(A.copy())
 
         # Check error
         if np.abs(prev_error - distances) < tolerance:
@@ -251,22 +291,17 @@ def rot_icp(A, B, N=30, use_point=False, record=False):
                 transformed_points.append(transformed_box)
 
             if record:
-                T, corr_indices, error, transforms, iter_correlations, point_clouds = icp(np.array(transformed_points), B, run_number=rot_theta, record_transforms=True)        
+                T, corr_indices, error, transforms, iter_correlations, point_clouds = icp(np.array(transformed_points), B, record_transforms=True)        
             else:
-                T, corr_indices, error = icp(np.array(transformed_points), B, run_number=rot_theta)
+                T, corr_indices, error = icp(np.array(transformed_points), B, record_transforms=False)
         else:
             for point in A:
                 point_array = np.array(point)
                 transformed_point = np.dot(R, point_array)
                 transformed_points.append(transformed_point.tolist())
-            T, corr_indices, error = point_icp(np.array(transformed_points), B, run_number=rot_theta)
+            T, corr_indices, error = point_icp(np.array(transformed_points), B)
         
-        # print("Rotation: ", rot_theta)
-        # print("Error: ", error)
         if error < lowest_error:
-            # print("NEW LOW")
-            # print("Error: ", error)
-            # print("Rotation: ", rot_theta)
             lowest_error = error 
             low_correspondence = corr_indices
             low_transform = T
@@ -289,6 +324,6 @@ if __name__ == "__main__":
     A = np.array(data[1])
     B = np.array(data[2])
     T, corr_indices, error = rot_icp(A, B, use_point=False)
-        
-    
-    
+
+
+
