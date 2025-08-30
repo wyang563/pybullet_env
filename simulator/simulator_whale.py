@@ -71,8 +71,10 @@ def run_pybullet_only_hike(
         drone_formation_type="line",
         target_obj="B",
         gnn_model_path=None,
+        gnn_model_goals=5,
         search_type="switchback",
         debug_images=False,
+        blur_images=0,  
 ):
     ordered_objs, ordered_locs = loc_color_tuple
     print(f"ordered_objs: {ordered_objs}")
@@ -187,14 +189,17 @@ def run_pybullet_only_hike(
                                                        formation_type=drone_formation_type, 
                                                        goal_assignment=goal_assignment,
                                                        gnn_model_path=gnn_model_path,
-                                                       search_type=search_type) 
+                                                       gnn_model_goals=gnn_model_goals,
+                                                       search_type=search_type,
+                                                       gnn_model_use_goals=True) 
         else:
             drone_models[str(i)] = WhaleDroneModel(drone_id=str(i), 
                                                    env=env, 
                                                    num_drones=num_drones,
                                                    num_objects=num_objects,
                                                    sim_dir=sim_dir, 
-                                                   lead_drone=False) 
+                                                   lead_drone=False,
+                                                   ) 
 
     for i in range(num_drones):
         drone_models[str(i)].set_other_drones(drone_models)
@@ -239,7 +244,7 @@ def run_pybullet_only_hike(
             out = [[0 for _ in range(4)] for _ in range(num_drones)]
             if drone_models["0"].mode == "search":
                 # get lead drone image
-                rgb, _, seg = env._getDroneImages(0)
+                rgb, _, seg = env._getDroneImages(0, blur=blur_images)
                 if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
                     env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
@@ -266,7 +271,7 @@ def run_pybullet_only_hike(
 
             elif drone_models["0"].mode == "whales":
                 for d in range(num_drones):
-                    rgb, _, seg = env._getDroneImages(d)
+                    rgb, _, seg = env._getDroneImages(d, blur=blur_images)
                     if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
                         env._exportImage(img_type=ImageType.RGB,
                                         img_input=rgb,
@@ -302,7 +307,7 @@ def run_pybullet_only_hike(
             elif drone_models["0"].mode == "tracking":
                 # get drone images
                 for d in range(num_drones):
-                    rgb, _, seg = env._getDroneImages(d)
+                    rgb, _, seg = env._getDroneImages(d, blur=blur_images)
 
                     if d == 0 and goal_assignment in ["icp", "gnn"] and not done_assignments:
                         if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
@@ -342,7 +347,7 @@ def run_pybullet_only_hike(
                     else:
                         if d == 0:
                             if i % (REC_EVERY_N_STEPS * VIDEO_FREQ) == 0 and debug_images:
-                                rgb, _, seg = env._getDroneImages(d)
+                                rgb, _, seg = env._getDroneImages(d, blur=blur_images)
                                 env._exportImage(img_type=ImageType.RGB,
                                     img_input=rgb,
                                     path=f'{sim_dir}/pics{d}_track',
@@ -360,7 +365,7 @@ def run_pybullet_only_hike(
 
                                 # plot target pixel
                                 if target_pixel is not None:
-                                    rgb, _, seg = env._getDroneImages(d) 
+                                    rgb, _, seg = env._getDroneImages(d, blur=blur_images) 
                                     px, py = int(target_pixel[0]), int(target_pixel[1])
                                     cv2.circle(rgb, (py, px), 5, (0, 0, 255), -1)
 
@@ -391,14 +396,14 @@ def run_pybullet_only_hike(
                                 print(f"Drone {d} has landed")
                                 drone_models[str(d)].mode = "complete"
                                 out[d] = [0, 0, 0, 0]
-                            rgb, _, seg = env._getDroneImages(d)
+                            rgb, _, seg = env._getDroneImages(d, blur=blur_images)
                             env._exportImage(img_type=ImageType.RGB,
                                 img_input=rgb,
                                 path=f'{sim_dir}/pics{d}_track',
                                 frame_num=int(i / CTRL_EVERY_N_STEPS),
                             )
                         elif drone_models[str(d)].mode == "complete":
-                            rgb, _, seg = env._getDroneImages(d)
+                            rgb, _, seg = env._getDroneImages(d, blur=blur_images)
                             env._exportImage(img_type=ImageType.RGB,
                                 img_input=rgb,
                                 path=f'{sim_dir}/pics{d}_track',

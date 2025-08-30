@@ -11,7 +11,7 @@ from collections import defaultdict
 # If you don't have these urdfs in the pybullet_data package, 
 # run gym-pybullet-drones/gym_pybullet_drones/assets/copy_assets_to_pybullet_data_folder.py
 
-FILE_PREFIX = "/home/gridsan/wyang/.conda/envs/flex/lib/python3.9/site-packages/pybullet_data/" # REPLACE THIS WITH WHEREEVER YOUR DATA IS
+FILE_PREFIX = "/home/alex/miniconda3/envs/flex/lib/python3.9/site-packages/pybullet_data" # REPLACE THIS WITH WHEREEVER YOUR DATA IS
 
 filename_map = {
     'R': f"{FILE_PREFIX}/sphere2red.urdf",

@@ -450,11 +450,81 @@ def plot_icp_height_eval(json_filepaths, output_filename="pybullet_env/icp/icp_h
     plt.savefig(output_filename, dpi=300)
     plt.close()
 
+def plot_box_icp_vs_point_icp(point_icp_json_path, box_icp_json_path, output_path="pybullet_env/icp/box_vs_point_icp.pdf"):
+    """
+    Generates a plot comparing ICP accuracy vs. number of agents for point ICP and box ICP.
+
+    Args:
+        point_icp_json_path (str): Path to the JSON file containing point ICP results.
+        box_icp_json_path (str): Path to the JSON file containing box ICP results.
+        output_path (str): Path to save the generated plot.
+    """
+    def calculate_accuracies(json_path):
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+
+        accuracies = {}
+        agent_counts = sorted([int(k) for k in data.keys()]) # Sort agent counts numerically
+
+        for agent_count in agent_counts:
+            agent_data = data[str(agent_count)] # Agent count is string in JSON keys
+            total_successes = 0
+            total_attempts = 0
+            for whale_runs in agent_data.values():
+                total_successes += sum(1 for success in whale_runs if success)
+                total_attempts += len(whale_runs)
+            
+            if total_attempts > 0:
+                accuracies[agent_count] = total_successes / total_attempts
+            else:
+                accuracies[agent_count] = 0 # Or handle as NaN or skip if preferred
+        # Ensure all agent counts are present, even if with 0 accuracy
+        # This helps in aligning plots if one dataset is missing an agent count
+        all_agent_keys = sorted(list(set(accuracies.keys()))) # Get all unique sorted agent keys
+        
+        return [accuracies.get(agent, 0) for agent in all_agent_keys], all_agent_keys
+
+
+    point_icp_accuracies, point_agent_counts = calculate_accuracies(point_icp_json_path)
+    box_icp_accuracies, box_agent_counts = calculate_accuracies(box_icp_json_path)
+
+    # Ensure both lists of agent counts are aligned for plotting
+    # We'll use the union of agent counts and sort them
+    all_agent_counts = sorted(list(set(point_agent_counts + box_agent_counts)))
+
+    # Re-map accuracies to the unified agent counts, filling with 0 if an agent count is missing in one dataset
+    # This is a more robust way to handle potentially different sets of agent counts in the two files.
+    
+    # Create dictionaries for easy lookup
+    point_acc_map = dict(zip(point_agent_counts, point_icp_accuracies))
+    box_acc_map = dict(zip(box_agent_counts, box_icp_accuracies))
+
+    # Create aligned accuracy lists
+    aligned_point_accuracies = [point_acc_map.get(count, 0) for count in all_agent_counts]
+    aligned_box_accuracies = [box_acc_map.get(count, 0) for count in all_agent_counts]
+
+
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(all_agent_counts, aligned_point_accuracies, marker='o', linestyle='--', label='Point ICP')
+    plt.plot(all_agent_counts, aligned_box_accuracies, marker='s', linestyle='-', label='Box ICP')
+    
+    plt.xlabel("Number of Agents")
+    plt.ylabel("ICP Accuracy")
+    plt.title("ICP Accuracy: Box vs. Point")
+    plt.legend()
+    plt.grid(True)
+    plt.xticks(all_agent_counts) # Ensure all agent counts are shown as ticks
+    plt.ylim(0, 1.05) # Accuracy is between 0 and 1
+
+    plt.savefig(output_path, dpi=300)
+    print(f"Plot saved to {output_path}")
 
 if __name__ == "__main__":
+    print("Starting whale paper plots")
+    plot_box_icp_vs_point_icp("pybullet_env/icp/whale_data/eval_data_json/icp_accuracy_vs_agents_conf_0.3_vary_heights_False_use_point_icp_True_blur_0.json", "pybullet_env/icp/whale_data/eval_data_json/icp_accuracy_vs_agents_conf_0.3_vary_heights_False_use_point_icp_False_blur_0.json")
+
     # Example usage: Call the functions you want to run
     # plot_accuracy_vs_agents_by_whale_count()
     # plot_model_accuracy_vs_whale_count()
-    plot_icp_noise_eval(["pybullet_env/icp/whale_data/eval_data_json/icp_point_test_noiselevel_40_heightvar_0.5.json",
-                         "pybullet_env/icp/whale_data/eval_data_json/icp_point_test_noiselevel_60_heightvar_0.5.json",
-                         "pybullet_env/icp/whale_data/eval_data_json/icp_point_test_noiselevel_100_heightvar_0.5.json"]) # Add call to the new function
+    # plot_icp_accuracy_vs_agents("path/to/your_point_icp_data.json", "pybullet_env/icp/whale_data/eval_data_json/icp_accuracy_vs_agents_conf_0.3_vary_heights_False_use_point_icp_False_blur_35.json", "actual_comparison_plot.png")

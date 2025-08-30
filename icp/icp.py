@@ -286,7 +286,8 @@ def rot_icp(A, B, N=30, use_point=False, record=False):
                 transformed_box = []
                 for point in box:
                     point_array = np.array(point)
-                    transformed_point = np.dot(R, point_array)
+                    # Ensure point_array is (2,) or (1,2) for R (2,2) dot point_array.T or point_array
+                    transformed_point = np.dot(R, point_array.T).T 
                     transformed_box.append(transformed_point.tolist())
                 transformed_points.append(transformed_box)
 
@@ -295,11 +296,17 @@ def rot_icp(A, B, N=30, use_point=False, record=False):
             else:
                 T, corr_indices, error = icp(np.array(transformed_points), B, record_transforms=False)
         else:
-            for point in A:
-                point_array = np.array(point)
-                transformed_point = np.dot(R, point_array)
+            # A is likely (num_points, 2) or needs to be reshaped if it's (num_boxes, 4, 2)
+            # If A is (num_boxes, 4, 2) and we want to treat all corners as points:
+            A_reshaped = A.reshape(-1, 2) # Reshape to (num_boxes * 4, 2)
+            # add noise to A_reshaped, making the noise standard deviation proportional to the coordinate values
+            noise_proportion_factor = 0.1 # Adjust this factor as needed
+            for point_coords in A_reshaped: # point_coords will be (2,)
+                transformed_point = np.dot(R, point_coords.T).T
                 transformed_points.append(transformed_point.tolist())
-            T, corr_indices, error = point_icp(np.array(transformed_points), B)
+            # transformed_points will be a list of lists, e.g., [[x1,y1], [x2,y2], ...]
+            # point_icp expects an array of shape (N, 2)
+            T, corr_indices, error = point_icp(np.array(transformed_points), B.reshape(-1,2))
         
         if error < lowest_error:
             lowest_error = error 

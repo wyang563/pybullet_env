@@ -271,12 +271,12 @@ def shear_image(img_file, shear_angle, save_dir, in_img=None):
     # Convert angle (in degrees) to a shear factor
     shear_factor = math.tan(math.radians(shear_angle))
 
-    # We’ll expand our output width so the entire sheared image shows.
+    # We'll expand our output width so the entire sheared image shows.
     # For a horizontal shear:
     new_width = int(w + abs(shear_factor) * h)
 
     # Build the shear matrix.
-    # Note the extra x-translation that shifts the image so it doesn’t go negative:
+    # Note the extra x-translation that shifts the image so it doesn't go negative:
     # If shear_factor > 0, we shift positively; if shear_factor < 0, the shift is 0.
     shift_x = max(0, int(shear_factor * h))
     M = np.float32([
@@ -494,7 +494,7 @@ def pairwise_box_plots(img_dir):
     print(failed_boxes)
     print(total)
 
-def eval_whale_model(model_conf_threshold=0.5, num_augmentations=100):
+def eval_whale_model(model_conf_threshold=0.3, num_augmentations=100, blur_factor=0):
     """
     Evaluates the YOLO model's accuracy in detecting the correct number of whales.
     It processes images from a specified directory, generates augmentations for each,
@@ -504,10 +504,10 @@ def eval_whale_model(model_conf_threshold=0.5, num_augmentations=100):
         model_conf_threshold (float): Confidence threshold for YOLO predictions.
         num_augmentations (int): Number of augmentations to generate per base image.
     """
-    input_dir = "pybullet_env/icp/whale_data/final_model_eval"
+    input_dir = "pybullet_env/icp/whale_data/yolo_dataset/images/val"
     temp_dir = "pybullet_env/icp/whale_data/whale_icp_eval"
     output_dir = "pybullet_env/icp/whale_data/eval_data_json"
-    output_filename = os.path.join(output_dir, f"model_accuracy_conf_{model_conf_threshold}.json")
+    output_filename = os.path.join(output_dir, f"model_accuracy_conf_{model_conf_threshold}_blur_{blur_factor}.json")
     
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
@@ -516,7 +516,7 @@ def eval_whale_model(model_conf_threshold=0.5, num_augmentations=100):
     results_agg = defaultdict(lambda: {'correct': 0, 'total': 0})
     
     # Load YOLO model
-    model_file = "pybullet_env/icp/whale_data/last.pt"
+    model_file = "pybullet_env/icp/whale_data/best.pt"
     model = YOLO(model_file)
 
     # Regex to parse filename
@@ -545,6 +545,9 @@ def eval_whale_model(model_conf_threshold=0.5, num_augmentations=100):
         if base_img is None:
             print(f"Error reading base image: {base_img_path_src}")
             continue
+
+        # Blur base image
+        base_img = cv2.GaussianBlur(base_img, (blur_factor, blur_factor), 0)
         cv2.imwrite(base_img_path_dst, base_img)
         
         # Generate augmentations
@@ -597,7 +600,7 @@ def eval_whale_model(model_conf_threshold=0.5, num_augmentations=100):
         print(f"Error saving results to JSON: {e}")
 
 
-def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3, vary_heights=False, record=False):
+def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3, vary_heights=False, record=False, use_point_icp=False, blur_factor=0, debug_failed_icp=False):
     """
     Evaluates ICP accuracy across varying numbers of agents (2, 4, 8, 16).
     For each agent count, it selects random base images, generates augmentations,
@@ -610,18 +613,23 @@ def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3,
     img_dir = "pybullet_env/icp/whale_data/final_model_eval"
     temp_dir = "pybullet_env/icp/whale_data/whale_icp_eval"
     output_dir = "pybullet_env/icp/whale_data/eval_data_json"
-    output_filename = os.path.join(output_dir, f"icp_accuracy_vs_agents_conf_{model_conf_threshold}_vary_heights_{vary_heights}.json")
+    output_filename = os.path.join(output_dir, f"icp_accuracy_vs_agents_conf_{model_conf_threshold}_vary_heights_{vary_heights}_use_point_icp_{use_point_icp}_blur_{blur_factor}.json")
     
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
+    debug_plot_dir = os.path.join(output_dir, "icp_failed_debug_plots")
+    if debug_failed_icp:
+        os.makedirs(debug_plot_dir, exist_ok=True)
 
-    agent_counts = [2, 4, 8, 16]
+
+    # agent_counts = [2, 4, 8, 16]
+    agent_counts = [2, 4, 6, 8, 10, 12, 14, 16]
     
     # overall_results[num_agents][num_whales] = [list of booleans indicating ICP success]
     overall_results = defaultdict(lambda: defaultdict(list))
     
     # Load YOLO model
-    model_file = "pybullet_env/icp/whale_data/last.pt"
+    model_file = "pybullet_env/icp/whale_data/best.pt"
     model = YOLO(model_file)
     
     # Regex to parse filename
@@ -657,7 +665,11 @@ def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3,
             base_img = cv2.imread(base_img_path_src)
             if base_img is None: 
                 continue
-            # cv2.imwrite(base_img_path_dst, base_img)
+
+            # Blur base image
+            if blur_factor > 0:
+                base_img = cv2.GaussianBlur(base_img, (blur_factor, blur_factor), 0)
+            cv2.imwrite(base_img_path_dst, base_img)
 
             # Generate augmentations and store paths/results
             augmented_data = [] # List to store {'path': path, 'boxes': boxes, 'box_count': count}
@@ -715,9 +727,9 @@ def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3,
                             raise ValueError("Cannot perform ICP with None boxes.")
 
                     if not record:
-                        _, corr, _ = rot_icp(boxes_1, boxes_0, use_point=False)
+                        _, corr, _ = rot_icp(boxes_1, boxes_0, use_point=use_point_icp)
                     else:
-                        _, corr, _, recorded_clouds = rot_icp(boxes_1, boxes_0, use_point=False, record=True)
+                        _, corr, _, recorded_clouds = rot_icp(boxes_1, boxes_0, use_point=use_point_icp, record=True)
 
                         # plot images of rotations
                         img0 = images[i]
@@ -762,6 +774,24 @@ def eval_whale_icp(num_base_images_per_agent_count=10, model_conf_threshold=0.3,
                 #     print(f"Error during ICP for {base_filename} with {num_agents} agents: {e}")
                 #     # Optionally record this as a failure? Depends on desired analysis.
                 #     overall_results[num_agents][expected_num_whales].append(False) 
+                if not icp_correct and debug_failed_icp:
+                    print("PLOTTING FAILED RUN")
+                    plot_title = f"DEBUG_ICP_FAIL_{os.path.splitext(base_filename)[0]}_agents_{num_agents}"
+                    initial_boxes = icp_boxes_list[0]
+                    if initial_boxes is not None and len(initial_boxes) > 0:
+                        plot_rectangles(
+                            pc_name=plot_title,
+                            cloud1=initial_boxes,
+                            cloud2=initial_boxes, # Plotting correspondence of initial boxes to themselves
+                            correspondences=final_net_corr,
+                            rot_angle=0,
+                            save=True,
+                            save_dir=debug_plot_dir
+                        )
+                        print(f"Saved debug ICP plot: {os.path.join(debug_plot_dir, plot_title + '_registration.png')}")
+                    else:
+                        print(f"Skipping debug plot for {base_filename} with {num_agents} agents due to no initial boxes.")
+
             elif not all_counts_match:
                  # Record failure if box counts didn't match? Or just skip? Skipping for now.
                  pass
@@ -963,7 +993,13 @@ def plot_pair_boxes(boxes0, boxes1, corr, save_path, img_data):
 
 if __name__ == "__main__":
     print("STARTING PROGRAM")
-    eval_whale_icp(100, model_conf_threshold=0.3, vary_heights=False, record=True)
+    # eval_whale_model(model_conf_threshold=0.3, num_augmentations=100, blur_factor=35)
+    # eval_whale_icp(100, model_conf_threshold=0.3, vary_heights=False, record=False, use_point_icp=False, blur_factor=0) 
+    eval_whale_icp(100, model_conf_threshold=0.3, vary_heights=False, record=False, use_point_icp=True, blur_factor=0) 
+
+    # for blur_factor in [0, 5, 15, 25, 35]:
+    #     eval_whale_icp(100, model_conf_threshold=0.3, vary_heights=False, record=False, use_point_icp=True, blur_factor=blur_factor) 
+    #     eval_whale_icp(100, model_conf_threshold=0.3, vary_heights=False, record=False, use_point_icp=False, blur_factor=blur_factor) 
     # eval_icp_points(noise_level=60, height_variation=0.5, record=True)
     # for noise_level in [0, 20, 40, 60, 100]:
     #     eval_icp_points(noise_level=noise_level, height_variation=0.5)

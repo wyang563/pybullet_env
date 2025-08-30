@@ -126,4 +126,5 @@ if __name__ == "__main__":
                            gnn_model_path=config['gnn_model_path'],
                            search_type=config['search_type'],
                            debug_images=config['debug_images'],
+                           blur_images=int(config['blur_images']),
                            )

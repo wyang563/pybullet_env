@@ -6,6 +6,7 @@ from datetime import datetime
 import xml.etree.ElementTree as etxml
 import pkg_resources
 from PIL import Image
+import cv2
 # import pkgutil
 # egl = pkgutil.get_loader('eglRenderer')
 import numpy as np
@@ -540,7 +541,8 @@ class BaseAviary(gym.Env):
 
     def _getDroneImages(self,
                         nth_drone,
-                        segmentation: bool=True
+                        segmentation: bool=True,
+                        blur: int=0,
                         ):
         """Returns camera captures from the n-th drone POV.
 
@@ -551,6 +553,9 @@ class BaseAviary(gym.Env):
         segmentation : bool, optional
             Whether to compute the compute the segmentation mask.
             It affects performance.
+        blur : int, optional
+            The amount of blur to apply to RGB and segmentation images.
+            Must be an odd number. 0 means no blur.
 
         Returns
         -------
@@ -608,6 +613,19 @@ class BaseAviary(gym.Env):
         rgb = np.reshape(rgb, (h, w, 4))
         dep = np.reshape(dep, (h, w))
         seg = np.reshape(seg, (h, w))
+
+        # Apply blur if requested
+        if blur > 0:
+            # Ensure blur is odd
+            blur = blur if blur % 2 == 1 else blur + 1
+            # Blur RGB image (only the RGB channels, not alpha)
+            rgb_blurred = cv2.GaussianBlur(rgb[:,:,:3], (blur, blur), 0)
+            rgb = np.dstack((rgb_blurred, rgb[:,:,3]))  # Recombine with alpha channel
+            # Convert segmentation to float32 before blurring
+            seg_float = seg.astype(np.float32)
+            seg_blurred = cv2.GaussianBlur(seg_float, (blur, blur), 0)
+            seg = seg_blurred.astype(np.uint8)  # Convert back to uint8
+
         return rgb, dep, seg
 
     ################################################################################

@@ -28,7 +28,7 @@ IN_POSITION_DIST = 1.1 # distance tracking drones to search drone to be consider
 CTRL_DIST = 0.25
 
 class WhaleDroneModel:
-    def __init__(self, drone_id, env, sim_dir, num_drones, num_objects, lead_drone=False):
+    def __init__(self, drone_id, env, sim_dir, num_drones, num_objects, blur_factor=0, lead_drone=False):
         self.drone_id = drone_id # IMPORTANT: drone_id is the index of the drone in our drones list
         self.mode = "search"
         self.lead_drone = lead_drone
@@ -45,6 +45,7 @@ class WhaleDroneModel:
         self.prev_target_pixel_pos = None # for tracking stage (when using ICP), previous assigned drone target pixel position (global pixel coordinate of whale being targetted)
         self.num_whales = None # initialized in whale search stage once scout drone determines how many whales there are
         self.num_objects = num_objects
+        self.blur_factor = blur_factor
 
     def set_other_drones(self, other_drones):
         # map of ids to drone objects 
@@ -380,8 +381,8 @@ class WhaleDroneModel:
 
 class WhaleDroneLeadModel(WhaleDroneModel):
     '''Lead Drone model'''
-    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment, gnn_model_path, search_type, num_objects):
-        super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, num_objects=num_objects, lead_drone=lead_drone)
+    def __init__(self, drone_id, env, sim_dir, num_drones, lead_drone, init_position, formation_type, goal_assignment, gnn_model_path, search_type, num_objects, blur_factor=0):
+        super().__init__(drone_id=drone_id, env=env, num_drones=num_drones, sim_dir=sim_dir, num_objects=num_objects, lead_drone=lead_drone, blur_factor=blur_factor)
         self.target_y = 0
         self.init_velocity = [(9.0 - init_position[0]) / 24, (9 - init_position[1]) / 24, 0, 0]
         self.search_target_points = [] # (dx, dy) for the positions that each tagging drone should be at relative to search drone before tracking commences
@@ -571,15 +572,15 @@ class WhaleDroneLeadModel(WhaleDroneModel):
         os.makedirs(f"pybullet_env/icp/sim_data/run_{run_num}")
 
         for d in range(1, self.num_drones):
-            rgb1, _, seg1 = self.env._getDroneImages(d)
+            rgb1, _, seg1 = self.env._getDroneImages(d, blur=self.blur_factor)
 
             # save whale image
             cv2.imwrite(f"pybullet_env/icp/sim_data/run_{run_num}/drone_{d}_icp_whale_image.png", rgb1)
             cv2.imwrite(self.sim_dir + f"/icp_plots/drone_{d}_icp_whale_image.png", rgb1)
             if d + 1 == self.num_drones:
-                rgb2, _, seg2 = self.env._getDroneImages(1)
+                rgb2, _, seg2 = self.env._getDroneImages(1, blur=self.blur_factor)
             else:
-                rgb2, _, seg2 = self.env._getDroneImages(d + 1)
+                rgb2, _, seg2 = self.env._getDroneImages(d + 1, blur=self.blur_factor)
 
             # get centers of whales
             whale_centers1, whale_boxes1 = self.get_whale_center_list(seg1, rgb1, use_cloud=False)
@@ -800,7 +801,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
 
         for idx, d in enumerate(range(1, self.num_drones)):
             # Get the RGB image for drone d
-            rgb, _, _ = self.env._getDroneImages(d)
+            rgb, _, _ = self.env._getDroneImages(d, blur=self.blur_factor)
 
             target_pixel = [target_pixels[idx][1], target_pixels[idx][0]] # convert target pixel to numpy coordinates format
             self.other_drones[str(d)].prev_target_pixel_pos = target_pixel
@@ -851,7 +852,7 @@ class WhaleDroneLeadModel(WhaleDroneModel):
 
         for idx, d in enumerate(range(1, self.num_drones)):
             # Get the RGB image for drone d
-            rgb, _, _ = self.env._getDroneImages(d)
+            rgb, _, _ = self.env._getDroneImages(d, blur=self.blur_factor)
 
             target_pixel = [target_pixels[idx][1], target_pixels[idx][0]] # convert target pixel to numpy coordinates format
             self.other_drones[str(d)].prev_target_pixel_pos = target_pixel

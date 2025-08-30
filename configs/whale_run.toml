@@ -26,4 +26,5 @@ formation_type = "polygon" # either polygon or line (line by default)
 duration_sec = 15 # not actually being used effectively right now
 min_range = 2
 max_range = 5
-debug_images = false
+debug_images = true 
+blur_images = 9
